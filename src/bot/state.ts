@@ -1,21 +1,37 @@
-type PendingSelection =
-  | { kind: 'movie-list'; items: import('../services/types.js').MovieSearchItem[]; expiresAt: number }
-  | { kind: 'quality-list'; movie: import('../services/types.js').MovieDetails; expiresAt: number };
 
-const pending = new Map<string, PendingSelection>();
+import type { MovieResult } from "../services/types";
 
-export function setPending(jid: string, value: PendingSelection) {
-  pending.set(jid, value);
+interface Session {
+  results: MovieResult[];
+  updatedAt: number;
 }
-export function getPending(jid: string) {
-  const value = pending.get(jid);
-  if (!value) return undefined;
-  if (value.expiresAt < Date.now()) {
-    pending.delete(jid);
-    return undefined;
+
+const sessions = new Map<string, Session>();
+
+export function setResults(
+  jid: string,
+  results: MovieResult[]
+) {
+  sessions.set(jid, {
+    results,
+    updatedAt: Date.now()
+  });
+}
+
+export function getResults(
+  jid: string
+): MovieResult[] {
+  const session = sessions.get(jid);
+
+  if (!session) return [];
+
+  if (
+    Date.now() - session.updatedAt >
+    15 * 60 * 1000
+  ) {
+    sessions.delete(jid);
+    return [];
   }
-  return value;
-}
-export function clearPending(jid: string) {
-  pending.delete(jid);
+
+  return session.results;
 }
