@@ -1,22 +1,23 @@
-export interface MovieSearchItem {
+
+export interface MovieResult {
+  id: string;
   title: string;
-  year?: string;
-  imdbId?: string;
-  rating?: string;
-  posterUrl?: string;
-  providerMovieId: string;
-  ageRating?: string;
-}
-
-export interface MovieDetails extends MovieSearchItem {
+  year?: number;
   overview?: string;
-  runtimeMinutes?: number;
-  genres?: string[];
-  qualities: Array<{ label: string; providerFileId: string; size?: string }>;
+  rating?: string;
+  ageRating?: string;
+  sourceUrl?: string;
 }
 
-export interface AuthorizedMediaProvider {
-  search(query: string): Promise<MovieSearchItem[]>;
-  details(movie: MovieSearchItem): Promise<MovieDetails>;
-  createDelivery(fileId: string): Promise<{ url: string; expiresAt?: string }>;
+export interface MediaProvider {
+  search(query: string): Promise<MovieResult[]>;
+
+  getAuthorizedLinks(
+    movieId: string
+  ): Promise<
+    Array<{
+      label: string;
+      url: string;
+    }>
+  >;
 }
