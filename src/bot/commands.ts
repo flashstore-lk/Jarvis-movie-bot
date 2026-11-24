@@ -1,9 +1,14 @@
-
 import type { WASocket } from "@whiskeysockets/baileys";
 
 import { mediaProvider } from "../services/media-provider";
 import { setResults, getResults } from "./state";
 import { recordSearch } from "../database/supabase";
+
+import {
+  handleConsentCommand,
+  isWithinInboundLimit,
+  safeSendText
+} from "./safety";
 
 const HELP = [
   "🎬 *J.A.R.V.I.S. Movie Bot*",
@@ -11,7 +16,10 @@ const HELP = [
   "Movie title එකක් හෝ IMDb ID එකක් යවන්න.",
   "Search results වලින් අංකයක් තෝරන්න.",
   "",
-  "Commands: *help*, *menu*"
+  "Commands:",
+  "*help* - Help",
+  "*STOP* - Bot replies නවත්වන්න",
+  "*START* - Bot නැවත සක්‍රීය කරන්න"
 ].join("\n");
 
 function formatMovie(
@@ -50,16 +58,27 @@ export async function handleMessage(
   sock: WASocket,
   jid: string,
   text: string
-) {
+): Promise<void> {
   const message = text.trim();
 
   if (!message) return;
 
-  if (/^(help|menu|start)$/i.test(message)) {
-    await sock.sendMessage(jid, {
-      text: HELP
-    });
+  // Consent commands must work even when normal rate limit is reached.
+  const consentHandled = await handleConsentCommand(
+    sock,
+    jid,
+    message
+  );
 
+  if (consentHandled) return;
+
+  // Ignore excessive inbound requests.
+  if (!isWithinInboundLimit(jid)) {
+    return;
+  }
+
+  if (/^(help|menu)$/i.test(message)) {
+    await safeSendText(sock, jid, HELP);
     return;
   }
 
@@ -69,22 +88,25 @@ export async function handleMessage(
     const selected = results[index];
 
     if (!selected) {
-      await sock.sendMessage(jid, {
-        text:
-          "අංකය වලංගු නැහැ. " +
-          "නැවත movie title එකක් යවන්න."
-      });
+      await safeSendText(
+        sock,
+        jid,
+        "අංකය වලංගු නැහැ. නැවත movie title එකක් යවන්න."
+      );
 
       return;
     }
 
-    const details =
-      await mediaProvider.getDetails(selected.id);
+    const details = await mediaProvider.getDetails(
+      selected.id
+    );
 
     if (!details) {
-      await sock.sendMessage(jid, {
-        text: "Movie details ලබාගැනීමට නොහැකි වුණා."
-      });
+      await safeSendText(
+        sock,
+        jid,
+        "Movie details ලබාගැනීමට නොහැකි වුණා."
+      );
 
       return;
     }
@@ -107,20 +129,18 @@ export async function handleMessage(
       "Media delivery දැනට configure කර නැහැ."
     ].join("\n");
 
-    await sock.sendMessage(jid, {
-      text: response
-    });
-
+    await safeSendText(sock, jid, response);
     return;
   }
 
-  await sock.sendMessage(jid, {
-    text: "🔎 Movie එක සොයමින්..."
-  });
-
   try {
-    const results =
-      await mediaProvider.search(message);
+    await safeSendText(
+      sock,
+      jid,
+      "🔎 Movie එක සොයමින්..."
+    );
+
+    const results = await mediaProvider.search(message);
 
     await recordSearch({
       jid,
@@ -129,33 +149,34 @@ export async function handleMessage(
     });
 
     if (!results.length) {
-      await sock.sendMessage(jid, {
-        text:
-          "Movie එකක් හමු වුණේ නැහැ. " +
-          "නම හෝ IMDb ID එක නැවත පරීක්ෂා කරන්න."
-      });
+      await safeSendText(
+        sock,
+        jid,
+        "Movie එකක් හමු වුණේ නැහැ. නම හෝ IMDb ID එක නැවත පරීක්ෂා කරන්න."
+      );
 
       return;
     }
 
     setResults(jid, results);
 
-    await sock.sendMessage(jid, {
-      text:
-        "🎬 *MOVIE SEARCH RESULTS*\n\n" +
-        results
-          .map(formatMovie)
-          .join("\n\n") +
-        "\n\nMovie එකක් තෝරන්න: අදාළ අංකය යවන්න."
-    });
+    await safeSendText(
+      sock,
+      jid,
+      "🎬 *MOVIE SEARCH RESULTS*\n\n" +
+      results
+        .map(formatMovie)
+        .join("\n\n") +
+      "\n\nMovie එකක් තෝරන්න: අදාළ අංකය යවන්න."
+    );
 
   } catch (error) {
-    console.error("Movie search error:", error);
+    console.error("[Bot] Movie search failed:", error);
 
-    await sock.sendMessage(jid, {
-      text:
-        "Movie search එකේ දෝෂයක් ඇතිවුණා. " +
-        "API configuration එක පරීක්ෂා කරන්න."
-    });
+    await safeSendText(
+      sock,
+      jid,
+      "Movie search එකේ දෝෂයක් ඇතිවුණා. පසුව නැවත උත්සාහ කරන්න."
+    );
   }
 }
