@@ -28,8 +28,6 @@ COPY --from=build /app/dist ./dist
 
 RUN mkdir -p /app/auth_info
 
-VOLUME ["/app/auth_info"]
-
 EXPOSE 3000
 
 CMD ["npm", "start"]
