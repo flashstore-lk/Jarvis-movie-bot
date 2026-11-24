@@ -1,4 +1,3 @@
-
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
@@ -11,6 +10,11 @@ import { mkdir } from "node:fs/promises";
 
 import { env } from "../config/env";
 import { handleMessage } from "./commands";
+
+import {
+  safeSendText,
+  shouldProcessMessage
+} from "./safety";
 
 let currentSocket: WASocket | null = null;
 let reconnectTimer: NodeJS.Timeout | null = null;
@@ -69,11 +73,7 @@ export async function requestWhatsAppPairingCode(
     throw new Error("WhatsApp is already connected.");
   }
 
-  const code = await sock.requestPairingCode(
-    cleanNumber
-  );
-
-  return code;
+  return sock.requestPairingCode(cleanNumber);
 }
 
 async function waitForSocket(
@@ -116,6 +116,14 @@ function scheduleReconnect(): void {
     return;
   }
 
+  const scheduledDelay = reconnectDelay;
+
+  console.log(
+    `[Connection] Reconnect scheduled in ${Math.round(
+      scheduledDelay / 1000
+    )} seconds.`
+  );
+
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
 
@@ -126,10 +134,14 @@ function scheduleReconnect(): void {
     try {
       await connect();
     } catch (error) {
-      console.error("WhatsApp reconnect failed:", error);
+      console.error(
+        "[Connection] Reconnect failed:",
+        error
+      );
+
       scheduleReconnect();
     }
-  }, reconnectDelay);
+  }, scheduledDelay);
 
   reconnectDelay = Math.min(
     reconnectDelay * 2,
@@ -201,18 +213,20 @@ async function connect(): Promise<void> {
         qr
       } = update;
 
-      // Keep QR in memory for the authenticated website API.
-      // Never print the actual QR value in Railway logs.
+      // QR stays in memory for the protected pairing API.
+      // Never print the QR contents in logs.
       if (qr) {
         latestQr = qr;
 
         console.log(
-          "A new WhatsApp QR is available for the pairing website."
+          "[Connection] A new QR is available on the pairing website."
         );
       }
 
       if (connection === "connecting") {
-        console.log("WhatsApp connection is starting...");
+        console.log(
+          "[Connection] WhatsApp connection is starting..."
+        );
       }
 
       if (connection === "open") {
@@ -221,7 +235,9 @@ async function connect(): Promise<void> {
 
         clearReconnectTimer();
 
-        console.log("WhatsApp connected successfully.");
+        console.log(
+          "[Connection] WhatsApp connected successfully."
+        );
       }
 
       if (connection === "close") {
@@ -239,7 +255,7 @@ async function connect(): Promise<void> {
           statusCode === DisconnectReason.loggedOut
         ) {
           console.error(
-            "WhatsApp logged out. Please link the account again."
+            "[Connection] WhatsApp logged out. Link the account again."
           );
 
           stopped = true;
@@ -248,7 +264,7 @@ async function connect(): Promise<void> {
         }
 
         console.log(
-          "WhatsApp disconnected. Reconnection will be attempted."
+          "[Connection] WhatsApp disconnected."
         );
 
         scheduleReconnect();
@@ -280,8 +296,19 @@ async function connect(): Promise<void> {
 
           const jid = msg.key.remoteJid;
 
-          // Ignore group conversations.
-          if (jid.endsWith("@g.us")) {
+          // Ignore group, status and broadcast messages.
+          if (
+            jid.endsWith("@g.us") ||
+            jid.endsWith("@broadcast") ||
+            jid === "status@broadcast"
+          ) {
+            continue;
+          }
+
+          // Ignore duplicate WhatsApp message IDs.
+          if (
+            !shouldProcessMessage(jid, msg.key.id)
+          ) {
             continue;
           }
 
@@ -298,23 +325,13 @@ async function connect(): Promise<void> {
             await handleMessage(sock, jid, body);
 
           } catch (error) {
+            // Do not send an automatic error reply here.
+            // This avoids extra replies when safety storage or
+            // the outgoing queue is unavailable.
             console.error(
-              "Message handler failed:",
+              "[Bot] Message processing failed:",
               error
             );
-
-            try {
-              await sock.sendMessage(jid, {
-                text:
-                  "දෝෂයක් ඇතිවුණා. නැවත උත්සාහ කරන්න."
-              });
-
-            } catch (sendError) {
-              console.error(
-                "Error reply failed:",
-                sendError
-              );
-            }
           }
         }
       }
@@ -322,7 +339,7 @@ async function connect(): Promise<void> {
 
   } catch (error) {
     console.error(
-      "WhatsApp connection failed:",
+      "[Connection] WhatsApp connection failed:",
       error
     );
 
