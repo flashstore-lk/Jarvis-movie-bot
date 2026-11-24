@@ -34,7 +34,7 @@ export const env = {
     process.env.SUPABASE_SERVICE_ROLE_KEY || "",
 
   authDir:
-    process.env.AUTH_DIR || "./auth_info",
+    process.env.AUTH_DIR || "/app/auth_info",
 
   tmdbApiKey:
     process.env.TMDB_API_KEY || ""
