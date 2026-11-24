@@ -1,10 +1,33 @@
+
 services:
   - type: web
-    name: whatsapp-movie-assistant
+    name: jarvis-movie-bot
     runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: starter
+
     healthCheckPath: /health
+
     disk:
-      name: whatsapp-auth
+      name: jarvis-auth
       mountPath: /app/auth_info
       sizeGB: 1
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      - key: AUTH_DIR
+        value: /app/auth_info
+
+      - key: DASHBOARD_USER
+        sync: false
+
+      - key: DASHBOARD_PASSWORD
+        sync: false
+
+      - key: SUPABASE_URL
+        sync: false
+
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
