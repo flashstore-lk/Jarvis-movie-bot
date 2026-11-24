@@ -1,11 +1,14 @@
+
 services:
-  movie-assistant:
+  jarvis-movie-bot:
     build: .
     restart: unless-stopped
-    env_file: .env
+
+    env_file:
+      - .env
+
     ports:
       - "3000:3000"
+
     volumes:
-      - whatsapp_auth:/app/auth_info
-volumes:
-  whatsapp_auth:
+      - ./auth_info:/app/auth_info
