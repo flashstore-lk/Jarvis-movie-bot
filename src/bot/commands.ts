@@ -9,7 +9,7 @@ const HELP = [
   "🎬 *J.A.R.V.I.S. Movie Bot*",
   "",
   "Movie title එකක් හෝ IMDb ID එකක් යවන්න.",
-  "Search results ලැබුණොත් අංකයක් යවා තෝරන්න.",
+  "Search results වලින් අංකයක් තෝරන්න.",
   "",
   "Commands: *help*, *menu*"
 ].join("\n");
@@ -18,6 +18,8 @@ function formatMovie(
   movie: {
     title: string;
     year?: number;
+    rating?: string;
+    ageRating?: string;
     overview?: string;
   },
   index: number
@@ -26,11 +28,22 @@ function formatMovie(
     ? ` (${movie.year})`
     : "";
 
+  const rating = movie.rating
+    ? `⭐ ${movie.rating}/10`
+    : "Rating unavailable";
+
+  const age = movie.ageRating || "Not rated";
+
   const overview = movie.overview
-    ? `\n${movie.overview.slice(0, 240)}`
+    ? `\n${movie.overview.slice(0, 220)}`
     : "";
 
-  return `${index + 1}. *${movie.title}${year}*${overview}`;
+  return [
+    `${index + 1}. *${movie.title}${year}*`,
+    rating,
+    `Age rating: ${age}`,
+    overview
+  ].filter(Boolean).join("\n");
 }
 
 export async function handleMessage(
@@ -58,74 +71,91 @@ export async function handleMessage(
     if (!selected) {
       await sock.sendMessage(jid, {
         text:
-          "තෝරාගත් අංකය වලංගු නැහැ. " +
-          "අලුතින් movie title එකක් යවන්න."
+          "අංකය වලංගු නැහැ. " +
+          "නැවත movie title එකක් යවන්න."
       });
 
       return;
     }
 
-    const links =
-      await mediaProvider.getAuthorizedLinks(
-        selected.id
-      );
+    const details =
+      await mediaProvider.getDetails(selected.id);
 
-    if (!links.length) {
+    if (!details) {
+      await sock.sendMessage(jid, {
+        text: "Movie details ලබාගැනීමට නොහැකි වුණා."
+      });
+
+      return;
+    }
+
+    const response = [
+      "🎬 *MOVIE DETAILS*",
+      "",
+      `*Title:* ${details.title}`,
+      `*Year:* ${details.year || "Unknown"}`,
+      `*Rating:* ${details.rating || "N/A"}/10`,
+      `*Age rating:* ${details.ageRating || "Not rated"}`,
+      `*Runtime:* ${details.runtime ? `${details.runtime} minutes` : "Unknown"}`,
+      `*Genres:* ${details.genres?.join(", ") || "Unknown"}`,
+      "",
+      "*Overview:*",
+      details.overview || "No overview available.",
+      "",
+      `*TMDB:* ${details.sourceUrl || "Unavailable"}`,
+      "",
+      "Media delivery දැනට configure කර නැහැ."
+    ].join("\n");
+
+    await sock.sendMessage(jid, {
+      text: response
+    });
+
+    return;
+  }
+
+  await sock.sendMessage(jid, {
+    text: "🔎 Movie එක සොයමින්..."
+  });
+
+  try {
+    const results =
+      await mediaProvider.search(message);
+
+    await recordSearch({
+      jid,
+      query: message,
+      resultCount: results.length
+    });
+
+    if (!results.length) {
       await sock.sendMessage(jid, {
         text:
-          `*${selected.title}* තෝරාගත්තා.\n\n` +
-          "අවසරලත් media provider එකක් " +
-          "සම්බන්ධ කර නැති නිසා links දැනට අක්‍රියයි."
+          "Movie එකක් හමු වුණේ නැහැ. " +
+          "නම හෝ IMDb ID එක නැවත පරීක්ෂා කරන්න."
       });
 
       return;
     }
 
+    setResults(jid, results);
+
     await sock.sendMessage(jid, {
       text:
-        `*${selected.title}*\n` +
-        links
-          .map(
-            link =>
-              `${link.label}: ${link.url}`
-          )
-          .join("\n")
+        "🎬 *MOVIE SEARCH RESULTS*\n\n" +
+        results
+          .map(formatMovie)
+          .join("\n\n") +
+        "\n\nMovie එකක් තෝරන්න: අදාළ අංකය යවන්න."
     });
 
-    return;
-  }
+  } catch (error) {
+    console.error("Movie search error:", error);
 
-  await sock.sendMessage(jid, {
-    text: "🔎 සොයමින්..."
-  });
-
-  const results =
-    await mediaProvider.search(message);
-
-  await recordSearch({
-    jid,
-    query: message,
-    resultCount: results.length
-  });
-
-  if (!results.length) {
     await sock.sendMessage(jid, {
       text:
-        "Movie search provider එක තවම configure කර නැහැ. " +
-        "අවසරලත් metadata API එකක් සම්බන්ධ කළ පසු search ක්‍රියාත්මක කළ හැකියි."
+        "Movie search එකේ දෝෂයක් ඇතිවුණා. " +
+        "API configuration එක පරීක්ෂා කරන්න."
     });
-
-    return;
   }
-
-  setResults(jid, results);
-
-  await sock.sendMessage(jid, {
-    text:
-      "🎬 *Search results*\n\n" +
-      results
-        .slice(0, 8)
-        .map(formatMovie)
-        .join("\n\n")
-  });
 }
