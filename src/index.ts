@@ -1,8 +1,9 @@
-
 import express from "express";
 
 import { env } from "./config/env";
 import dashboard from "./dashboard";
+import pairing from "./pairing";
+
 import { startWhatsApp } from "./bot/connection";
 
 const app = express();
@@ -23,6 +24,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/admin", dashboard);
+app.use("/pairing", pairing);
 
 app.listen(env.port, () => {
   console.log(
