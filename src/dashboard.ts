@@ -1,38 +1,175 @@
-import express from 'express';
-import helmet from 'helmet';
-import { env } from './config/env.js';
 
-export function createDashboard() {
-  const app = express();
-  app.use(helmet({ contentSecurityPolicy: false }));
-  app.use(express.urlencoded({ extended: false }));
-  app.use(express.json());
+import express, {
+  type Request,
+  type Response,
+  type NextFunction
+} from "express";
 
-  const auth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const header = req.headers.authorization ?? '';
-    const expected = 'Basic ' + Buffer.from(`${env.DASHBOARD_USER}:${env.DASHBOARD_PASSWORD}`).toString('base64');
-    if (header !== expected) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="Movie Assistant Admin"');
-      res.status(401).send('Authentication required');
-      return;
-    }
-    next();
-  };
+import { env } from "./config/env";
+import { getWhatsAppStatus } from "./bot/connection";
 
-  app.get('/health', (_req, res) => res.json({ ok: true, service: 'whatsapp-movie-assistant' }));
-  app.get('/', auth, (_req, res) => {
-    res.type('html').send(`<!doctype html>
-<html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Movie Assistant Admin</title>
-<style>
-body{font-family:system-ui;background:#0b1020;color:#e8efff;margin:0;padding:28px}
-main{max-width:760px;margin:auto}.card{background:#151e33;border:1px solid #263653;border-radius:16px;padding:22px;margin:14px 0}
-h1{color:#54d8ee}small{color:#9eb0cc}.pill{color:#8df0c2}
-</style></head><body><main><h1>WhatsApp Movie Assistant</h1>
-<p class="pill">Admin console • v1.0 starter</p>
-<div class="card"><h2>Service status</h2><p>Backend is running.</p><p><small>WhatsApp pairing QR is printed in the hosting logs during first startup.</small></p></div>
-<div class="card"><h2>Configuration</h2><p>Provider: ${env.MEDIA_PROVIDER}</p><p>Supabase: ${env.SUPABASE_URL ? 'Configured' : 'Not configured'}</p><p>Media delivery stays disabled until an authorized provider adapter is implemented.</p></div>
-<div class="card"><h2>Next setup steps</h2><ol><li>Configure environment variables.</li><li>Use persistent storage for <code>auth_info/</code>.</li><li>Connect Supabase using <code>supabase/schema.sql</code>.</li><li>Implement and verify an authorized media provider.</li></ol></div>
-</main></body></html>`);
-  });
-  return app;
+const router = express.Router();
+
+function auth(
+  req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  const header =
+    req.headers.authorization || "";
+
+  const [scheme, token] = header.split(" ");
+
+  if (scheme !== "Basic" || !token) {
+    res.setHeader(
+      "WWW-Authenticate",
+      'Basic realm="JARVIS Admin"'
+    );
+
+    return res.status(401).send(
+      "Authentication required"
+    );
+  }
+
+  let decoded = "";
+
+  try {
+    decoded = Buffer
+      .from(token, "base64")
+      .toString("utf8");
+  } catch {
+    return res.status(401).send(
+      "Invalid credentials"
+    );
+  }
+
+  const separator = decoded.indexOf(":");
+
+  const user = decoded.slice(0, separator);
+  const pass = decoded.slice(separator + 1);
+
+  if (
+    separator < 0 ||
+    user !== env.dashboardUser ||
+    pass !== env.dashboardPassword
+  ) {
+    return res.status(401).send(
+      "Invalid credentials"
+    );
+  }
+
+  next();
 }
+
+router.get(
+  "/",
+  auth,
+  (_req: Request, res: Response) => {
+    const status = getWhatsAppStatus();
+
+    const account = status.account
+      ? String(status.account).replace(
+          /[&<>"]/g,
+          ""
+        )
+      : "Not connected";
+
+    const connectionColor = status.connected
+      ? "#064e3b"
+      : "#7f1d1d";
+
+    const connectionText = status.connected
+      ? "Connected"
+      : "Disconnected";
+
+    res.type("html").send(`
+      <!doctype html>
+      <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1"
+        >
+
+        <title>JARVIS Admin</title>
+
+        <style>
+          * {
+            box-sizing: border-box;
+          }
+
+          body {
+            margin: 0;
+            min-height: 100vh;
+            background: #080d18;
+            color: #eaf7ff;
+            font-family: Arial, sans-serif;
+            padding: 24px;
+          }
+
+          main {
+            max-width: 720px;
+            margin: 8vh auto;
+            padding: 28px;
+            border: 1px solid #164e63;
+            border-radius: 18px;
+            background: #0e1726;
+          }
+
+          h1 {
+            color: #67e8f9;
+          }
+
+          .muted {
+            color: #9fb3c8;
+          }
+
+          .pill {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 99px;
+            background: ${connectionColor};
+          }
+
+          .card {
+            margin-top: 20px;
+            padding: 18px;
+            background: #111f31;
+            border-radius: 12px;
+          }
+        </style>
+      </head>
+
+      <body>
+        <main>
+          <h1>J.A.R.V.I.S.</h1>
+
+          <p class="muted">
+            WhatsApp Administration
+          </p>
+
+          <div class="card">
+            <p>WhatsApp Connection</p>
+
+            <span class="pill">
+              ${connectionText}
+            </span>
+          </div>
+
+          <div class="card">
+            <p>Connected Account</p>
+            <strong>${account}</strong>
+          </div>
+
+          <p class="muted">
+            Starter dashboard — read only.
+          </p>
+        </main>
+      </body>
+      </html>
+    `);
+  }
+);
+
+export default router;
