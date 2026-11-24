@@ -1,4 +1,3 @@
-
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
@@ -19,14 +18,20 @@ let reconnectTimer: NodeJS.Timeout | null = null;
 let reconnectDelay = 2000;
 let stopped = false;
 let connecting = false;
+let latestQr: string | null = null;
 
 const AUTH_DIR = env.authDir || "/app/auth_info";
 
 export function getWhatsAppStatus() {
   return {
     connected: Boolean(currentSocket?.user),
-    account: currentSocket?.user?.id || null
+    account: currentSocket?.user?.id || null,
+    hasQr: Boolean(latestQr)
   };
+}
+
+export function getLatestQr() {
+  return latestQr;
 }
 
 export async function startWhatsApp() {
@@ -35,6 +40,50 @@ export async function startWhatsApp() {
   if (currentSocket || connecting) return;
 
   await connect();
+}
+
+async function waitForSocket(
+  timeoutMs = 15000
+): Promise<WASocket> {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (currentSocket) return currentSocket;
+
+    await new Promise(resolve =>
+      setTimeout(resolve, 200)
+    );
+  }
+
+  throw new Error(
+    "WhatsApp connection is not ready. Try again."
+  );
+}
+
+export async function requestWhatsAppPairingCode(
+  phoneNumber: string
+): Promise<string> {
+  if (!/^\d{8,15}$/.test(phoneNumber)) {
+    throw new Error(
+      "Enter a valid phone number with country code."
+    );
+  }
+
+  await startWhatsApp();
+
+  const sock = await waitForSocket();
+
+  if (sock.user) {
+    throw new Error(
+      "WhatsApp is already connected."
+    );
+  }
+
+  const code = await sock.requestPairingCode(
+    phoneNumber
+  );
+
+  return code;
 }
 
 function scheduleReconnect() {
@@ -65,7 +114,6 @@ async function connect() {
   connecting = true;
 
   try {
-    // Ensure Railway Volume directory exists.
     await mkdir(AUTH_DIR, { recursive: true });
 
     const { state, saveCreds } =
@@ -103,12 +151,14 @@ async function connect() {
       } = update;
 
       if (qr) {
-        console.log("Scan this WhatsApp QR:");
+        latestQr = qr;
 
+        console.log("A new WhatsApp QR is available.");
         qrcode.generate(qr, { small: true });
       }
 
       if (connection === "open") {
+        latestQr = null;
         reconnectDelay = 2000;
 
         console.log("WhatsApp connected.");
@@ -116,6 +166,7 @@ async function connect() {
 
       if (connection === "close") {
         currentSocket = null;
+        latestQr = null;
 
         const statusCode =
           (lastDisconnect?.error as any)
@@ -157,7 +208,6 @@ async function connect() {
 
           const jid = msg.key.remoteJid;
 
-          // Private chats only.
           if (jid.endsWith("@g.us")) continue;
 
           const body =
@@ -190,7 +240,10 @@ async function connect() {
     );
 
   } catch (error) {
-    console.error("WhatsApp connection failed:", error);
+    console.error(
+      "WhatsApp connection failed:",
+      error
+    );
 
     scheduleReconnect();
   } finally {
