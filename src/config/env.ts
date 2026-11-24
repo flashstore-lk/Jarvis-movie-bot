@@ -1,4 +1,3 @@
-
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -7,9 +6,7 @@ function required(name: string): string {
   const value = process.env[name]?.trim();
 
   if (!value) {
-    throw new Error(
-      `Missing environment variable: ${name}`
-    );
+    throw new Error(`Missing environment variable: ${name}`);
   }
 
   return value;
@@ -17,25 +14,16 @@ function required(name: string): string {
 
 export const env = {
   port: Number(process.env.PORT || 3000),
+  nodeEnv: process.env.NODE_ENV || "development",
 
-  nodeEnv:
-    process.env.NODE_ENV || "development",
+  dashboardUser: required("DASHBOARD_USER"),
+  dashboardPassword: required("DASHBOARD_PASSWORD"),
 
-  dashboardUser:
-    required("DASHBOARD_USER"),
+  pairingApiToken: process.env.PAIRING_API_TOKEN || "",
 
-  dashboardPassword:
-    required("DASHBOARD_PASSWORD"),
+  supabaseUrl: process.env.SUPABASE_URL || "",
+  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || "",
 
-  supabaseUrl:
-    process.env.SUPABASE_URL || "",
-
-  supabaseServiceRoleKey:
-    process.env.SUPABASE_SERVICE_ROLE_KEY || "",
-
-  authDir:
-    process.env.AUTH_DIR || "/app/auth_info",
-
-  tmdbApiKey:
-    process.env.TMDB_API_KEY || ""
+  authDir: process.env.AUTH_DIR || "/app/auth_info",
+  tmdbApiKey: process.env.TMDB_API_KEY || ""
 };
