@@ -154,7 +154,6 @@ async function connect() {
         latestQr = qr;
 
         console.log("A new WhatsApp QR is available.");
-        qrcode.generate(qr, { small: true });
       }
 
       if (connection === "open") {
