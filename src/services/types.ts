@@ -7,10 +7,14 @@ export interface MovieResult {
   rating?: string;
   ageRating?: string;
   sourceUrl?: string;
+  runtime?: number;
+  genres?: string[];
 }
 
 export interface MediaProvider {
   search(query: string): Promise<MovieResult[]>;
+
+  getDetails(movieId: string): Promise<MovieResult | null>;
 
   getAuthorizedLinks(
     movieId: string
