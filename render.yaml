@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: whatsapp-movie-assistant
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    disk:
+      name: whatsapp-auth
+      mountPath: /app/auth_info
+      sizeGB: 1
