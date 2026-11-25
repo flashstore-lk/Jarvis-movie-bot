@@ -1,3 +1,4 @@
+
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
@@ -6,15 +7,24 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 
 import pino from "pino";
-import { mkdir } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  unlink
+} from "node:fs/promises";
+import path from "node:path";
 
 import { env } from "../config/env";
 import { handleMessage } from "./commands";
+import { shouldProcessMessage } from "./safety";
 
-import {
-  safeSendText,
-  shouldProcessMessage
-} from "./safety";
+type ConnectionState =
+  | "idle"
+  | "connecting"
+  | "qr"
+  | "open"
+  | "closed"
+  | "logged_out";
 
 let currentSocket: WASocket | null = null;
 let reconnectTimer: NodeJS.Timeout | null = null;
@@ -22,17 +32,32 @@ let reconnectTimer: NodeJS.Timeout | null = null;
 let reconnectDelay = 2000;
 let stopped = false;
 let connecting = false;
+let pairingRequestInProgress = false;
+
 let latestQr: string | null = null;
+let connectionState: ConnectionState = "idle";
+
 let socketGeneration = 0;
+let authCleanupPromise: Promise<void> | null = null;
 
 const AUTH_DIR = env.authDir || "/app/auth_info";
 
+// --------------------------------------------------
+// STATUS
+// --------------------------------------------------
+
 export function getWhatsAppStatus() {
   return {
-    connected: Boolean(currentSocket?.user),
-    account: currentSocket?.user?.id || null,
+    connected: connectionState === "open",
+    state: connectionState,
+    account:
+      connectionState === "open"
+        ? currentSocket?.user?.id || null
+        : null,
     hasQr: Boolean(latestQr),
-    connecting
+    connecting:
+      connectionState === "connecting" ||
+      connectionState === "qr"
   };
 }
 
@@ -40,15 +65,91 @@ export function getLatestQr(): string | null {
   return latestQr;
 }
 
+// --------------------------------------------------
+// AUTH FILE CLEANUP
+// Preserve jarvis-safety.json.
+// Only used after WhatsApp reports loggedOut.
+// --------------------------------------------------
+
+async function clearLoggedOutAuthFiles(): Promise<void> {
+  if (authCleanupPromise) {
+    await authCleanupPromise;
+    return;
+  }
+
+  authCleanupPromise = (async () => {
+    await mkdir(AUTH_DIR, {
+      recursive: true
+    });
+
+    const entries = await readdir(
+      AUTH_DIR,
+      { withFileTypes: true }
+    );
+
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      // Never delete opt-out / safety records.
+      if (
+        entry.name === "jarvis-safety.json" ||
+        entry.name === "jarvis-safety.json.tmp"
+      ) {
+        continue;
+      }
+
+      await unlink(
+        path.join(AUTH_DIR, entry.name)
+      );
+    }
+
+    console.log(
+      "[Connection] Logged-out WhatsApp auth files cleared. Safety data preserved."
+    );
+  })();
+
+  try {
+    await authCleanupPromise;
+  } finally {
+    authCleanupPromise = null;
+  }
+}
+
+// --------------------------------------------------
+// START
+// --------------------------------------------------
+
 export async function startWhatsApp(): Promise<void> {
   stopped = false;
 
-  if (currentSocket || connecting) {
+  if (connecting) {
     return;
+  }
+
+  if (
+    currentSocket &&
+    (
+      connectionState === "connecting" ||
+      connectionState === "qr" ||
+      connectionState === "open"
+    )
+  ) {
+    return;
+  }
+
+  if (connectionState === "logged_out") {
+    await clearLoggedOutAuthFiles();
+    connectionState = "idle";
   }
 
   await connect();
 }
+
+// --------------------------------------------------
+// REQUEST PAIRING CODE
+// --------------------------------------------------
 
 export async function requestWhatsAppPairingCode(
   phoneNumber: string
@@ -61,48 +162,113 @@ export async function requestWhatsAppPairingCode(
     );
   }
 
-  if (currentSocket?.user) {
-    throw new Error("WhatsApp is already connected.");
+  if (pairingRequestInProgress) {
+    throw new Error(
+      "A pairing request is already processing. Please wait."
+    );
   }
 
-  await startWhatsApp();
-
-  const sock = await waitForSocket();
-
-  if (sock.user) {
-    throw new Error("WhatsApp is already connected.");
+  if (connectionState === "open") {
+    throw new Error(
+      "WhatsApp is already connected. Disconnect the linked device first if you want to change accounts."
+    );
   }
 
-  return sock.requestPairingCode(cleanNumber);
+  pairingRequestInProgress = true;
+
+  try {
+    if (connectionState === "logged_out") {
+      stopped = true;
+      clearReconnectTimer();
+
+      await clearLoggedOutAuthFiles();
+
+      currentSocket = null;
+      latestQr = null;
+      connectionState = "idle";
+      stopped = false;
+    }
+
+    if (
+      !currentSocket ||
+      connectionState === "closed" ||
+      connectionState === "idle"
+    ) {
+      await startWhatsApp();
+    }
+
+    const sock = await waitForPairingSocket();
+
+    if (connectionState === "open" || sock.user) {
+      throw new Error(
+        "WhatsApp is already connected."
+      );
+    }
+
+    const code = await sock.requestPairingCode(
+      cleanNumber
+    );
+
+    console.log(
+      "[Connection] Pairing code generated successfully."
+    );
+
+    return code;
+
+  } finally {
+    pairingRequestInProgress = false;
+  }
 }
 
-async function waitForSocket(
-  timeoutMs = 20000
+// --------------------------------------------------
+// WAIT FOR SOCKET
+// --------------------------------------------------
+
+async function waitForPairingSocket(
+  timeoutMs = 30000
 ): Promise<WASocket> {
   const startedAt = Date.now();
 
   while (Date.now() - startedAt < timeoutMs) {
-    if (stopped) {
-      throw new Error("WhatsApp connection was stopped.");
+    if (stopped || connectionState === "logged_out") {
+      throw new Error(
+        "WhatsApp session was logged out. Please retry the pairing process."
+      );
     }
 
-    if (currentSocket?.user) {
+    if (connectionState === "open") {
+      throw new Error(
+        "WhatsApp is already connected."
+      );
+    }
+
+    if (
+      currentSocket &&
+      (
+        connectionState === "connecting" ||
+        connectionState === "qr"
+      )
+    ) {
       return currentSocket;
     }
 
-    if (currentSocket && latestQr) {
-      return currentSocket;
+    if (!connecting && !currentSocket) {
+      await startWhatsApp();
     }
 
     await new Promise(resolve =>
-      setTimeout(resolve, 200)
+      setTimeout(resolve, 250)
     );
   }
 
   throw new Error(
-    "WhatsApp connection is not ready. Please try again."
+    "WhatsApp connection is not ready. Please wait and try again."
   );
 }
+
+// --------------------------------------------------
+// RECONNECT MANAGEMENT
+// --------------------------------------------------
 
 function clearReconnectTimer(): void {
   if (reconnectTimer) {
@@ -112,7 +278,11 @@ function clearReconnectTimer(): void {
 }
 
 function scheduleReconnect(): void {
-  if (stopped || reconnectTimer) {
+  if (
+    stopped ||
+    reconnectTimer ||
+    connectionState === "logged_out"
+  ) {
     return;
   }
 
@@ -127,7 +297,12 @@ function scheduleReconnect(): void {
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
 
-    if (stopped || currentSocket || connecting) {
+    if (
+      stopped ||
+      currentSocket ||
+      connecting ||
+      connectionState === "logged_out"
+    ) {
       return;
     }
 
@@ -149,12 +324,17 @@ function scheduleReconnect(): void {
   );
 }
 
+// --------------------------------------------------
+// CONNECTION
+// --------------------------------------------------
+
 async function connect(): Promise<void> {
   if (connecting || stopped) {
     return;
   }
 
   connecting = true;
+  connectionState = "connecting";
 
   const generation = ++socketGeneration;
 
@@ -172,7 +352,10 @@ async function connect(): Promise<void> {
       version
     } = await fetchLatestBaileysVersion();
 
-    if (stopped || generation !== socketGeneration) {
+    if (
+      stopped ||
+      generation !== socketGeneration
+    ) {
       return;
     }
 
@@ -196,8 +379,13 @@ async function connect(): Promise<void> {
     });
 
     currentSocket = sock;
+    connectionState = "connecting";
 
     sock.ev.on("creds.update", saveCreds);
+
+    // --------------------------------------------------
+    // CONNECTION EVENTS
+    // --------------------------------------------------
 
     sock.ev.on("connection.update", update => {
       if (
@@ -213,10 +401,12 @@ async function connect(): Promise<void> {
         qr
       } = update;
 
-      // QR stays in memory for the protected pairing API.
-      // Never print the QR contents in logs.
       if (qr) {
         latestQr = qr;
+
+        if (connectionState !== "open") {
+          connectionState = "qr";
+        }
 
         console.log(
           "[Connection] A new QR is available on the pairing website."
@@ -224,14 +414,18 @@ async function connect(): Promise<void> {
       }
 
       if (connection === "connecting") {
+        connectionState = "connecting";
+
         console.log(
           "[Connection] WhatsApp connection is starting..."
         );
       }
 
       if (connection === "open") {
+        connectionState = "open";
         latestQr = null;
         reconnectDelay = 2000;
+        stopped = false;
 
         clearReconnectTimer();
 
@@ -241,35 +435,54 @@ async function connect(): Promise<void> {
       }
 
       if (connection === "close") {
-        if (currentSocket === sock) {
-          currentSocket = null;
-        }
-
-        latestQr = null;
-
         const statusCode =
           (lastDisconnect?.error as any)
             ?.output?.statusCode;
 
+        latestQr = null;
+
+        if (currentSocket === sock) {
+          currentSocket = null;
+        }
+
         if (
           statusCode === DisconnectReason.loggedOut
         ) {
+          connectionState = "logged_out";
+          stopped = true;
+
+          clearReconnectTimer();
+
+          // Invalidate events from this socket.
+          socketGeneration += 1;
+
           console.error(
-            "[Connection] WhatsApp logged out. Link the account again."
+            "[Connection] WhatsApp logged out. Old auth session will be cleared."
           );
 
-          stopped = true;
-          clearReconnectTimer();
+          void clearLoggedOutAuthFiles().catch(error => {
+            console.error(
+              "[Connection] Could not clear logged-out auth files:",
+              error
+            );
+          });
+
           return;
         }
 
+        connectionState = "closed";
+
         console.log(
-          "[Connection] WhatsApp disconnected."
+          "[Connection] WhatsApp disconnected. Reconnection will be attempted."
         );
 
         scheduleReconnect();
       }
     });
+
+    // --------------------------------------------------
+    // INCOMING MESSAGES
+    // --------------------------------------------------
 
     sock.ev.on(
       "messages.upsert",
@@ -280,7 +493,8 @@ async function connect(): Promise<void> {
 
         if (
           currentSocket !== sock ||
-          generation !== socketGeneration
+          generation !== socketGeneration ||
+          connectionState !== "open"
         ) {
           return;
         }
@@ -296,7 +510,7 @@ async function connect(): Promise<void> {
 
           const jid = msg.key.remoteJid;
 
-          // Ignore group, status and broadcast messages.
+          // Ignore groups, status and broadcast messages.
           if (
             jid.endsWith("@g.us") ||
             jid.endsWith("@broadcast") ||
@@ -305,9 +519,11 @@ async function connect(): Promise<void> {
             continue;
           }
 
-          // Ignore duplicate WhatsApp message IDs.
           if (
-            !shouldProcessMessage(jid, msg.key.id)
+            !shouldProcessMessage(
+              jid,
+              msg.key.id
+            )
           ) {
             continue;
           }
@@ -322,12 +538,13 @@ async function connect(): Promise<void> {
           }
 
           try {
-            await handleMessage(sock, jid, body);
+            await handleMessage(
+              sock,
+              jid,
+              body
+            );
 
           } catch (error) {
-            // Do not send an automatic error reply here.
-            // This avoids extra replies when safety storage or
-            // the outgoing queue is unavailable.
             console.error(
               "[Bot] Message processing failed:",
               error
@@ -338,6 +555,8 @@ async function connect(): Promise<void> {
     );
 
   } catch (error) {
+    connectionState = "closed";
+
     console.error(
       "[Connection] WhatsApp connection failed:",
       error
