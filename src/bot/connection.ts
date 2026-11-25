@@ -67,10 +67,17 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Read state through a function to avoid stale
-// TypeScript control-flow narrowing after async waits.
 function getConnectionState(): ConnectionState {
   return connectionState;
+}
+
+// IMPORTANT:
+// Keep the "open" comparison inside this helper.
+// This prevents TypeScript control-flow narrowing
+// from causing TS2367 in other functions.
+
+function isWhatsAppConnected(): boolean {
+  return connectionState === "open";
 }
 
 function clearReconnectTimer(): void {
@@ -99,13 +106,13 @@ export function getWhatsAppStatus() {
   const state = getConnectionState();
 
   return {
-    connected: state === "open",
+    connected: isWhatsAppConnected(),
+
     state,
 
-    account:
-      state === "open"
-        ? currentSocket?.user?.id || null
-        : null,
+    account: isWhatsAppConnected()
+      ? currentSocket?.user?.id || null
+      : null,
 
     hasQr: Boolean(latestQr),
 
@@ -140,7 +147,7 @@ async function clearLoggedOutAuthFiles(): Promise<void> {
     for (const entry of entries) {
       if (!entry.isFile()) continue;
 
-      // Never delete bot safety data.
+      // Preserve safety data.
       if (
         entry.name === "jarvis-safety.json" ||
         entry.name === "jarvis-safety.json.tmp"
@@ -148,11 +155,13 @@ async function clearLoggedOutAuthFiles(): Promise<void> {
         continue;
       }
 
-      await unlink(path.join(AUTH_DIR, entry.name));
+      await unlink(
+        path.join(AUTH_DIR, entry.name)
+      );
     }
 
     console.log(
-      "[Connection] Old auth files cleared. Safety data preserved."
+      "[Connection] Auth files cleared. Safety data preserved."
     );
   })();
 
@@ -201,7 +210,7 @@ export async function startWhatsApp(): Promise<void> {
     (
       state === "connecting" ||
       state === "qr" ||
-      state === "open"
+      isWhatsAppConnected()
     )
   ) {
     return;
@@ -236,7 +245,7 @@ async function waitForPairingSocket(
       );
     }
 
-    if (state === "open") {
+    if (isWhatsAppConnected()) {
       throw new Error(
         "WhatsApp is already connected."
       );
@@ -250,8 +259,6 @@ async function waitForPairingSocket(
 
     const sock = currentSocket;
 
-    // The socket must exist before requesting a code.
-    // QR generation is not required for pairing-code flow.
     if (
       sock &&
       (
@@ -295,7 +302,7 @@ export async function requestWhatsAppPairingCode(
     );
   }
 
-  if (getConnectionState() === "open") {
+  if (isWhatsAppConnected()) {
     throw new Error(
       "WhatsApp is already connected."
     );
@@ -320,23 +327,21 @@ export async function requestWhatsAppPairingCode(
 
     const sock = await waitForPairingSocket();
 
-    // Give the newly created socket time to initialize.
+    // Allow the socket to initialize.
     await delay(PAIRING_SETTLE_DELAY);
-
-    const currentState = getConnectionState();
 
     if (
       currentSocket !== sock ||
       stopped ||
-      currentState === "closed" ||
-      currentState === "logged_out"
+      getConnectionState() === "closed" ||
+      getConnectionState() === "logged_out"
     ) {
       throw new Error(
         "WhatsApp connection changed before pairing."
       );
     }
 
-    if (currentState === "open") {
+    if (isWhatsAppConnected()) {
       throw new Error(
         "WhatsApp is already connected."
       );
@@ -353,7 +358,7 @@ export async function requestWhatsAppPairingCode(
     latestQr = null;
 
     console.log(
-      "[Connection] Pairing code generated successfully."
+      "[Connection] Pairing code generated."
     );
 
     return code;
@@ -441,7 +446,7 @@ async function connect(): Promise<void> {
     } = await useMultiFileAuthState(AUTH_DIR);
 
     console.log(
-      "[Connection] Fetching current WhatsApp Web version..."
+      "[Connection] Fetching WhatsApp Web version..."
     );
 
     const versionResult =
@@ -451,7 +456,7 @@ async function connect(): Promise<void> {
 
     if (!versionResult.isLatest) {
       throw new Error(
-        "Current WhatsApp Web version unavailable. Refusing to connect with an outdated version."
+        "Latest WhatsApp Web version is unavailable."
       );
     }
 
@@ -499,18 +504,18 @@ async function connect(): Promise<void> {
     connectionState = "connecting";
     latestQr = null;
 
-    // --------------------------------------------------
+    // ------------------------------------------------
     // SAVE CREDENTIALS
-    // --------------------------------------------------
+    // ------------------------------------------------
 
     sock.ev.on(
       "creds.update",
       saveCreds
     );
 
-    // --------------------------------------------------
+    // ------------------------------------------------
     // CONNECTION EVENTS
-    // --------------------------------------------------
+    // ------------------------------------------------
 
     sock.ev.on(
       "connection.update",
@@ -539,12 +544,12 @@ async function connect(): Promise<void> {
         if (qr) {
           latestQr = qr;
 
-          if (getConnectionState() !== "open") {
+          if (!isWhatsAppConnected()) {
             connectionState = "qr";
           }
 
           console.log(
-            "[Connection] Pairing QR event received."
+            "[Connection] QR event received."
           );
         }
 
@@ -616,9 +621,9 @@ async function connect(): Promise<void> {
       }
     );
 
-    // --------------------------------------------------
+    // ------------------------------------------------
     // INCOMING MESSAGES
-    // --------------------------------------------------
+    // ------------------------------------------------
 
     sock.ev.on(
       "messages.upsert",
@@ -628,7 +633,7 @@ async function connect(): Promise<void> {
         if (
           currentSocket !== sock ||
           generation !== socketGeneration ||
-          getConnectionState() !== "open"
+          !isWhatsAppConnected()
         ) {
           return;
         }
@@ -653,7 +658,7 @@ async function connect(): Promise<void> {
             continue;
           }
 
-          // Duplicate-message protection.
+          // Duplicate message protection.
           if (
             !shouldProcessMessage(
               jid,
@@ -687,15 +692,20 @@ async function connect(): Promise<void> {
     );
 
   } catch (error) {
-    connectionState = "closed";
-    latestQr = null;
+    if (generation === socketGeneration) {
+      connectionState = "closed";
+      latestQr = null;
+    }
 
     console.error(
       "[Connection] Initialization failed:",
       getDisconnectDetails(error)
     );
 
-    if (!stopped) {
+    if (
+      !stopped &&
+      generation === socketGeneration
+    ) {
       scheduleReconnect();
     }
 
