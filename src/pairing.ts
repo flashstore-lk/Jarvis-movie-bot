@@ -1,3 +1,4 @@
+
 import express, {
   type Request,
   type Response,
@@ -15,6 +16,10 @@ import {
 } from "./bot/connection";
 
 const router = express.Router();
+
+// --------------------------------------------------
+// AUTHENTICATION
+// --------------------------------------------------
 
 function verifyToken(
   req: Request,
@@ -52,10 +57,17 @@ function verifyToken(
 
 router.use(verifyToken);
 
+// --------------------------------------------------
+// STATUS
+// --------------------------------------------------
+
 router.get(
   "/status",
   (_req: Request, res: Response) => {
-    res.setHeader("Cache-Control", "no-store");
+    res.setHeader(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate"
+    );
 
     res.json({
       success: true,
@@ -64,16 +76,24 @@ router.get(
   }
 );
 
+// --------------------------------------------------
+// QR CODE
+// --------------------------------------------------
+
 router.get(
   "/qr",
   (_req: Request, res: Response) => {
-    res.setHeader("Cache-Control", "no-store");
+    res.setHeader(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate"
+    );
 
     const status = getWhatsAppStatus();
 
     if (status.connected) {
       return res.status(409).json({
         success: false,
+        state: status.state,
         message: "WhatsApp is already connected."
       });
     }
@@ -81,24 +101,33 @@ router.get(
     const qr = getLatestQr();
 
     if (!qr) {
-      return res.status(409).json({
+      return res.status(503).json({
         success: false,
+        state: status.state,
         message:
-          "QR is not ready yet. Please try again shortly."
+          "QR is not ready yet. Please wait and try again."
       });
     }
 
     res.json({
       success: true,
+      state: status.state,
       qr
     });
   }
 );
 
+// --------------------------------------------------
+// PAIRING CODE
+// --------------------------------------------------
+
 router.post(
   "/code",
   async (req: Request, res: Response) => {
-    res.setHeader("Cache-Control", "no-store");
+    res.setHeader(
+      "Cache-Control",
+      "no-store, no-cache, must-revalidate"
+    );
 
     try {
       const phoneNumber = String(
@@ -120,21 +149,42 @@ router.post(
 
       res.json({
         success: true,
-        code
+        code,
+        state: getWhatsAppStatus().state
       });
 
     } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not generate pairing code.";
+
       console.error(
-        "Pairing code request failed:",
-        error
+        "[Pairing] Pairing code request failed:",
+        message
       );
 
-      res.status(500).json({
+      let statusCode = 500;
+
+      if (
+        message.includes("already connected")
+      ) {
+        statusCode = 409;
+      } else if (
+        message.includes("already processing")
+      ) {
+        statusCode = 429;
+      } else if (
+        message.includes("not ready") ||
+        message.includes("logged out")
+      ) {
+        statusCode = 503;
+      }
+
+      res.status(statusCode).json({
         success: false,
-        message:
-          error instanceof Error
-            ? error.message
-            : "Could not generate pairing code."
+        state: getWhatsAppStatus().state,
+        message
       });
     }
   }
