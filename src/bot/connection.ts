@@ -49,6 +49,10 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function getConnectionState(): ConnectionState {
+  return connectionState;
+}
+
 function clearReconnectTimer(): void {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
@@ -215,18 +219,20 @@ export async function requestWhatsAppPairingCode(
     }
 
     // Wait until Baileys has produced a QR event.
-    // This indicates that the socket has progressed
-    // beyond the initial connecting state.
     const sock = await waitForPairingReady();
 
     // Allow the WebSocket transport to settle.
     await delay(PAIRING_SETTLE_DELAY);
 
+    // Read the latest state through a function.
+    // This avoids TypeScript's stale control-flow narrowing.
+    const latestState = getConnectionState();
+
     if (
       currentSocket !== sock ||
-      connectionState === "closed" ||
-      connectionState === "logged_out" ||
-      connectionState === "open"
+      latestState === "closed" ||
+      latestState === "logged_out" ||
+      latestState === "open"
     ) {
       throw new Error(
         "WhatsApp connection changed before the pairing request. Please try again."
@@ -293,8 +299,6 @@ async function waitForPairingReady(
       );
     }
 
-    // QR is emitted after the socket has progressed
-    // through its initial connection handshake.
     if (
       currentSocket &&
       latestQr &&
@@ -451,8 +455,6 @@ async function connect(): Promise<void> {
         );
       }
 
-      // Process QR after connection status so that
-      // a combined update does not overwrite QR state.
       if (qr) {
         latestQr = qr;
 
@@ -521,7 +523,6 @@ async function connect(): Promise<void> {
           `[Connection] WhatsApp disconnected. Status: ${statusCode ?? "unknown"}`
         );
 
-        // Includes restartRequired (515).
         scheduleReconnect();
       }
     });
