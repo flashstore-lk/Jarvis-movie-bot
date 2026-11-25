@@ -1,12 +1,25 @@
+
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
 type BotStatus = {
   connected?: boolean;
   account?: string | null;
 };
+
+type ApiResponse = {
+  success?: boolean;
+  message?: string;
+  qr?: string;
+  code?: string;
+  connected?: boolean;
+  account?: string | null;
+};
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export default function Home() {
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -16,17 +29,25 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
 
-  async function refreshStatus() {
+  const refreshStatus = useCallback(async () => {
     try {
-      const response = await fetch(
-        "/api/pairing/status",
-        { cache: "no-store" }
-      );
+      const response = await fetch("/api/pairing/status", {
+        method: "GET",
+        cache: "no-store",
+        headers: {
+          Accept: "application/json",
+        },
+      });
 
-      const data = await response.json();
+      if (!response.ok) return;
+
+      const data: ApiResponse = await response.json();
 
       if (data.success) {
-        setStatus(data);
+        setStatus({
+          connected: Boolean(data.connected),
+          account: data.account ?? null,
+        });
 
         if (data.connected) {
           setQr("");
@@ -35,21 +56,23 @@ export default function Home() {
         }
       }
     } catch {
-      // Status will retry on the next refresh.
+      // Retry on the next status refresh.
     }
-  }
+  }, []);
 
   useEffect(() => {
     void refreshStatus();
 
-    const timer = setInterval(() => {
+    const timer = window.setInterval(() => {
       void refreshStatus();
     }, 4000);
 
-    return () => clearInterval(timer);
-  }, []);
+    return () => window.clearInterval(timer);
+  }, [refreshStatus]);
 
   async function getQrCode() {
+    if (busy) return;
+
     setBusy(true);
     setMessage("");
     setPairingCode("");
@@ -57,43 +80,76 @@ export default function Home() {
 
     try {
       let lastMessage = "QR is not ready yet.";
+      let receivedQr = "";
 
-      // Give the Railway bot a short time to produce its QR.
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const response = await fetch(
-          "/api/pairing/qr",
-          { cache: "no-store" }
-        );
+      // Wait up to approximately 30 seconds for Railway.
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const response = await fetch("/api/pairing/qr", {
+          method: "GET",
+          cache: "no-store",
+          headers: {
+            Accept: "application/json",
+          },
+        });
 
-        const data = await response.json();
+        const data: ApiResponse = await response.json();
 
-        if (data.success && data.qr) {
-          setQr(data.qr);
-          setMessage(
-            "Open WhatsApp and scan this QR code."
-          );
-          return;
+        if (response.ok && data.success && data.qr) {
+          receivedQr = data.qr;
+          break;
         }
 
         lastMessage = data.message || lastMessage;
 
-        if (response.status !== 409) break;
+        // These errors are not temporary.
+        if (
+          response.status === 400 ||
+          response.status === 401 ||
+          response.status === 403
+        ) {
+          break;
+        }
 
-        await new Promise(resolve =>
-          setTimeout(resolve, 1200)
-        );
+        // Retry while the QR is being generated.
+        if (
+          response.status === 409 ||
+          response.status === 502 ||
+          response.status === 503
+        ) {
+          if (attempt < 19) {
+            await sleep(1500);
+            continue;
+          }
+        }
+
+        // Stop on other unexpected responses.
+        if (
+          response.status !== 409 &&
+          response.status !== 502 &&
+          response.status !== 503
+        ) {
+          break;
+        }
       }
 
-      setMessage(lastMessage);
-
+      if (receivedQr) {
+        setQr(receivedQr);
+        setMessage("Open WhatsApp and scan this QR code.");
+      } else {
+        setMessage(lastMessage);
+      }
     } catch {
-      setMessage("Could not get the QR code.");
+      setMessage(
+        "Could not reach the bot. Please try again."
+      );
     } finally {
       setBusy(false);
     }
   }
 
   async function getPairingCode() {
+    if (busy) return;
+
     const cleanNumber = phoneNumber.replace(/\D/g, "");
 
     if (!/^\d{8,15}$/.test(cleanNumber)) {
@@ -109,22 +165,21 @@ export default function Home() {
     setPairingCode("");
 
     try {
-      const response = await fetch(
-        "/api/pairing/code",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            phoneNumber: cleanNumber
-          })
-        }
-      );
+      const response = await fetch("/api/pairing/code", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify({
+          phoneNumber: cleanNumber,
+        }),
+      });
 
-      const data = await response.json();
+      const data: ApiResponse = await response.json();
 
-      if (!response.ok || !data.success) {
+      if (!response.ok || !data.success || !data.code) {
         throw new Error(
           data.message || "Could not generate pairing code."
         );
@@ -134,7 +189,6 @@ export default function Home() {
       setMessage(
         "Enter this code in WhatsApp on your phone."
       );
-
     } catch (error) {
       setMessage(
         error instanceof Error
@@ -197,6 +251,7 @@ export default function Home() {
           <>
             <div className="section-heading">
               <span>01</span>
+
               <div>
                 <h2>Enter phone number</h2>
                 <p>
@@ -217,13 +272,15 @@ export default function Home() {
               autoComplete="tel"
               placeholder="94771234567"
               value={phoneNumber}
-              onChange={event =>
+              onChange={(event) =>
                 setPhoneNumber(event.target.value)
               }
+              disabled={busy}
             />
 
             <div className="section-heading second">
               <span>02</span>
+
               <div>
                 <h2>Choose linking method</h2>
                 <p>
@@ -237,6 +294,7 @@ export default function Home() {
                 className="secondary-button"
                 onClick={getQrCode}
                 disabled={busy}
+                type="button"
               >
                 {busy ? "Please wait..." : "Get QR Code"}
               </button>
@@ -245,10 +303,9 @@ export default function Home() {
                 className="primary-button"
                 onClick={getPairingCode}
                 disabled={busy}
+                type="button"
               >
-                {busy
-                  ? "Please wait..."
-                  : "Get Pairing Code"}
+                {busy ? "Please wait..." : "Get Pairing Code"}
               </button>
             </div>
 
@@ -303,10 +360,18 @@ export default function Home() {
         {status.connected && (
           <div className="connected-card">
             <div className="success-icon">✓</div>
+
             <h2>Connection complete</h2>
+
             <p>
               JARVIS is now connected to WhatsApp.
             </p>
+
+            {status.account && (
+              <p className="small-note">
+                Connected account: {status.account}
+              </p>
+            )}
           </div>
         )}
 
@@ -318,6 +383,7 @@ export default function Home() {
 
         <div className="security-note">
           <span>🔒</span>
+
           <p>
             Keep your QR code and pairing code private.
             Anyone who obtains them may be able to link
