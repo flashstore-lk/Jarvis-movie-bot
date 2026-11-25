@@ -7,11 +7,13 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 
 import pino from "pino";
+
 import {
   mkdir,
   readdir,
   unlink
 } from "node:fs/promises";
+
 import path from "node:path";
 
 import { env } from "../config/env";
@@ -49,12 +51,16 @@ const AUTH_DIR = env.authDir || "/app/auth_info";
 export function getWhatsAppStatus() {
   return {
     connected: connectionState === "open",
+
     state: connectionState,
+
     account:
       connectionState === "open"
         ? currentSocket?.user?.id || null
         : null,
+
     hasQr: Boolean(latestQr),
+
     connecting:
       connectionState === "connecting" ||
       connectionState === "qr"
@@ -197,14 +203,13 @@ export async function requestWhatsAppPairingCode(
       await startWhatsApp();
     }
 
+    // This function already checks whether WhatsApp
+    // is connected or logged out.
     const sock = await waitForPairingSocket();
 
-    if (connectionState === "open" || sock.user) {
-      throw new Error(
-        "WhatsApp is already connected."
-      );
-    }
-
+    // Request the pairing code.
+    // Do not check sock.user here because it may contain
+    // stale information from an earlier connection.
     const code = await sock.requestPairingCode(
       cleanNumber
     );
