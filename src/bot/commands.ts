@@ -1,3 +1,4 @@
+
 import type { WASocket } from "@whiskeysockets/baileys";
 
 import { mediaProvider } from "../services/media-provider";
@@ -14,6 +15,10 @@ import {
 
 import type { MovieResult } from "../services/types";
 
+// --------------------------------------------------
+// HELP MENU
+// --------------------------------------------------
+
 const HELP = [
   "🎬 *J.A.R.V.I.S. MOVIE BOT*",
   "",
@@ -29,25 +34,49 @@ const HELP = [
   ".stop - Stop bot replies",
   ".start - Enable bot again",
   "",
-  "⚠️ Commands සියල්ල . prefix එකෙන් පටන් ගන්න ඕන."
+  "Movie නමක් හෝ IMDb ID එකක් ඇතුළත් කරන්න."
 ].join("\n");
 
-function formatMovie(movie: MovieResult, index: number): string {
-  const year = movie.year ? ` (${movie.year})` : "";
-  const rating = movie.rating ? `⭐ ${movie.rating}/10` : "Rating unavailable";
-  const age = movie.ageRating || "Not rated";
-  const overview = movie.overview ? `\n${movie.overview.slice(0, 220)}` : "";
+// --------------------------------------------------
+// MOVIE SEARCH RESULT FORMAT
+// --------------------------------------------------
+
+function formatMovie(
+  movie: MovieResult,
+  index: number
+): string {
+  const year = movie.year
+    ? ` (${movie.year})`
+    : "";
+
+  const rating = movie.rating
+    ? `⭐ ${movie.rating}/10`
+    : "⭐ Rating unavailable";
+
+  const ageRating = movie.ageRating || "Not rated";
+
+  const overview = movie.overview
+    ? `\n${movie.overview.slice(0, 220)}`
+    : "";
 
   return [
     `${index + 1}. *${movie.title}${year}*`,
     rating,
-    `Age rating: ${age}`,
+    `Age rating: ${ageRating}`,
     overview
   ].filter(Boolean).join("\n");
 }
 
-function formatMovieDetails(movie: MovieResult): string {
-  const rating = movie.rating ? `${movie.rating}/10` : "Unavailable";
+// --------------------------------------------------
+// MOVIE DETAILS FORMAT
+// --------------------------------------------------
+
+function formatMovieDetails(
+  movie: MovieResult
+): string {
+  const rating = movie.rating
+    ? `${movie.rating}/10`
+    : "Unavailable";
 
   return [
     `🎬 *${movie.title}${movie.year ? ` (${movie.year})` : ""}*`,
@@ -60,7 +89,6 @@ function formatMovieDetails(movie: MovieResult): string {
     `│ 🎬 *DIRECTOR:* \`${movie.directors?.join(", ") || "Unknown"}\``,
     `│ 🎭 *GENRES:* \`${movie.genres?.join(", ") || "Unknown"}\``,
     `│ 🔞 *AGE RATING:* \`${movie.ageRating || "Not rated"}\``,
-    "│",
     "",
     "*OVERVIEW:*",
     movie.overview || "No overview available.",
@@ -70,6 +98,10 @@ function formatMovieDetails(movie: MovieResult): string {
     "© POWERED BY J.A.R.V.I.S."
   ].join("\n");
 }
+
+// --------------------------------------------------
+// SEND MOVIE DETAILS
+// --------------------------------------------------
 
 async function sendMovieDetails(
   sock: WASocket,
@@ -81,20 +113,27 @@ async function sendMovieDetails(
   if (movie.posterUrl) {
     try {
       await safeSendMessage(sock, jid, {
-        image: { url: movie.posterUrl },
+        image: {
+          url: movie.posterUrl
+        },
         caption
       });
+
       return;
     } catch (error) {
       console.error(
         "[Bot] Poster delivery failed:",
-        error instanceof Error ? error.message : "Unknown error"
+        error instanceof Error
+          ? error.message
+          : "Unknown error"
       );
+
       await safeSendText(
         sock,
         jid,
         `${caption}\n\n🖼️ Poster image could not be delivered.`
       );
+
       return;
     }
   }
@@ -105,6 +144,10 @@ async function sendMovieDetails(
     `${caption}\n\n🖼️ Poster image unavailable.`
   );
 }
+
+// --------------------------------------------------
+// SEARCH MOVIE
+// --------------------------------------------------
 
 async function searchMovie(
   sock: WASocket,
@@ -117,16 +160,43 @@ async function searchMovie(
     await safeSendText(
       sock,
       jid,
-      "Movie නමක් හෝ IMDb ID එකක් ඇතුළත් කරන්න.\n\nඋදාහරණ:\n.mv Deadpool\n.mv tt1431045"
+      [
+        "Movie නමක් හෝ IMDb ID එකක් ඇතුළත් කරන්න.",
+        "",
+        "උදාහරණ:",
+        ".mv Deadpool",
+        ".mv tt1431045",
+        ".mv Deadpool/tt1431045"
+      ].join("\n")
     );
+
     return;
   }
 
   try {
-    const combinedMatch = cleanQuery.match(/^(.+?)\\s*\\/\\s*(tt\\d{5,12})$/i);
-    const searchTerm = combinedMatch ? combinedMatch[2] : cleanQuery;
+    // Check combined title / IMDb format.
+    // Example: Deadpool/tt1431045
 
-    await safeSendText(sock, jid, "🔎 Movie එක සොයමින්...");
+    const slashIndex = cleanQuery.lastIndexOf("/");
+
+    const imdbCandidate =
+      slashIndex >= 0
+        ? cleanQuery.slice(slashIndex + 1).trim()
+        : "";
+
+    const combinedMatch =
+      /^tt\d{5,12}$/i.test(imdbCandidate);
+
+    // If an IMDb ID is supplied, search by IMDb ID.
+    const searchTerm = combinedMatch
+      ? imdbCandidate
+      : cleanQuery;
+
+    await safeSendText(
+      sock,
+      jid,
+      "🔎 Movie එක සොයමින්..."
+    );
 
     const results = await mediaProvider.search(searchTerm);
 
@@ -142,33 +212,67 @@ async function searchMovie(
         jid,
         "Movie එකක් හමු වුණේ නැහැ. Movie නම හෝ IMDb ID එක පරීක්ෂා කරන්න."
       );
+
       return;
     }
+
+    // Combined title / IMDb search:
+    // Send details of the first IMDb result directly.
 
     if (combinedMatch) {
-      const details = await mediaProvider.getDetails(results[0].id);
+      const details = await mediaProvider.getDetails(
+        results[0].id
+      );
+
       if (!details) {
-        await safeSendText(sock, jid, "Movie details ලබාගැනීමට නොහැකි වුණා.");
+        await safeSendText(
+          sock,
+          jid,
+          "Movie details ලබාගැනීමට නොහැකි වුණා."
+        );
+
         return;
       }
-      await sendMovieDetails(sock, jid, details);
+
+      await sendMovieDetails(
+        sock,
+        jid,
+        details
+      );
+
       return;
     }
 
+    // Normal search:
+    // Save results for the .select command.
+
     setResults(jid, results);
+
+    const formattedResults = results
+      .map((movie, index) => formatMovie(movie, index))
+      .join("\n\n");
 
     await safeSendText(
       sock,
       jid,
-      "🎬 *MOVIE SEARCH RESULTS*\n\n" +
-      results.map(formatMovie).join("\n\n") +
-      "\n\nMovie එක තෝරන්න:\n`.select 1` වැනි command එකක් යවන්න."
+      [
+        "🎬 *MOVIE SEARCH RESULTS*",
+        "",
+        formattedResults,
+        "",
+        "Movie එක තෝරන්න:",
+        "`.select 1` වැනි command එකක් යවන්න."
+      ].join("\n")
     );
+
   } catch (error) {
     console.error(
       "[Bot] Movie search failed:",
-      error instanceof Error ? error.message : "Unknown error"
+      error instanceof Error
+        ? error.message
+        : "Unknown error"
     );
+
     await safeSendText(
       sock,
       jid,
@@ -176,6 +280,10 @@ async function searchMovie(
     );
   }
 }
+
+// --------------------------------------------------
+// SELECT MOVIE
+// --------------------------------------------------
 
 async function selectMovie(
   sock: WASocket,
@@ -188,11 +296,14 @@ async function selectMovie(
       jid,
       "නිවැරදි result number එකක් යවන්න.\nඋදාහරණ: `.select 1`"
     );
+
     return;
   }
 
   const index = Number(argument) - 1;
-  const selected = getResults(jid)[index];
+
+  const results = getResults(jid);
+  const selected = results[index];
 
   if (!selected) {
     await safeSendText(
@@ -200,24 +311,56 @@ async function selectMovie(
       jid,
       "අංකය වලංගු නැහැ. `.mv Deadpool` මගින් නැවත search කරන්න."
     );
+
     return;
   }
 
   try {
-    const details = await mediaProvider.getDetails(selected.id);
+    await safeSendText(
+      sock,
+      jid,
+      "⏳ Movie details ලබාගනිමින්..."
+    );
+
+    const details = await mediaProvider.getDetails(
+      selected.id
+    );
+
     if (!details) {
-      await safeSendText(sock, jid, "Movie details ලබාගැනීමට නොහැකි වුණා.");
+      await safeSendText(
+        sock,
+        jid,
+        "Movie details ලබාගැනීමට නොහැකි වුණා."
+      );
+
       return;
     }
-    await sendMovieDetails(sock, jid, details);
+
+    await sendMovieDetails(
+      sock,
+      jid,
+      details
+    );
+
   } catch (error) {
     console.error(
       "[Bot] Movie details failed:",
-      error instanceof Error ? error.message : "Unknown error"
+      error instanceof Error
+        ? error.message
+        : "Unknown error"
     );
-    await safeSendText(sock, jid, "Movie details ලබාගැනීමේදී දෝෂයක් ඇතිවුණා.");
+
+    await safeSendText(
+      sock,
+      jid,
+      "Movie details ලබාගැනීමේදී දෝෂයක් ඇතිවුණා."
+    );
   }
 }
+
+// --------------------------------------------------
+// MAIN MESSAGE HANDLER
+// --------------------------------------------------
 
 export async function handleMessage(
   sock: WASocket,
@@ -225,65 +368,128 @@ export async function handleMessage(
   text: string
 ): Promise<void> {
   const message = text.trim();
-  if (!message) return;
 
+  if (!message) {
+    return;
+  }
+
+  // Only process commands.
   if (!message.startsWith(".")) {
-    if (await isOptedOut(jid)) return;
+    if (await isOptedOut(jid)) {
+      return;
+    }
+
     return;
   }
 
   const commandLine = message.slice(1).trim();
-  if (!commandLine) return;
+
+  if (!commandLine) {
+    return;
+  }
 
   const firstSpace = commandLine.indexOf(" ");
+
   const command = (
-    firstSpace === -1 ? commandLine : commandLine.slice(0, firstSpace)
+    firstSpace === -1
+      ? commandLine
+      : commandLine.slice(0, firstSpace)
   ).toLowerCase();
+
   const argument = firstSpace === -1
     ? ""
     : commandLine.slice(firstSpace + 1).trim();
 
-  const consentHandled = await handleConsentCommand(sock, jid, commandLine);
-  if (consentHandled) return;
-  if (await isOptedOut(jid)) return;
+  // Handle STOP / START consent commands.
 
-  if (!isWithinInboundLimit(jid)) {
-    await safeSendText(sock, jid, "ඔබ ඉතා ඉක්මනින් messages එවා ඇත. විනාඩියකින් නැවත උත්සාහ කරන්න.");
+  const consentHandled = await handleConsentCommand(
+    sock,
+    jid,
+    commandLine
+  );
+
+  if (consentHandled) {
     return;
   }
 
+  if (await isOptedOut(jid)) {
+    return;
+  }
+
+  // Inbound rate limit.
+
+  if (!isWithinInboundLimit(jid)) {
+    await safeSendText(
+      sock,
+      jid,
+      "ඔබ ඉතා ඉක්මනින් messages එවා ඇත. විනාඩියකින් නැවත උත්සාහ කරන්න."
+    );
+
+    return;
+  }
+
+  // Command router.
+
   switch (command) {
     case "help":
-    case "menu":
-      await safeSendText(sock, jid, HELP);
-      return;
-
-    case "mv":
-    case "movie":
-      await searchMovie(sock, jid, argument);
-      return;
-
-    case "select":
-      await selectMovie(sock, jid, argument);
-      return;
-
-    case "status":
+    case "menu": {
       await safeSendText(
         sock,
         jid,
-        "🟢 *J.A.R.V.I.S. STATUS*\n\n" +
-        "Movie metadata: TMDB\n" +
-        "Search: Available\n" +
-        "File delivery: Disabled unless an authorized provider is configured\n" +
-        "Commands: `.help`"
+        HELP
       );
-      return;
 
-    default:
+      return;
+    }
+
+    case "mv":
+    case "movie": {
+      await searchMovie(
+        sock,
+        jid,
+        argument
+      );
+
+      return;
+    }
+
+    case "select": {
+      await selectMovie(
+        sock,
+        jid,
+        argument
+      );
+
+      return;
+    }
+
+    case "status": {
+      await safeSendText(
+        sock,
+        jid,
+        [
+          "🟢 *J.A.R.V.I.S. STATUS*",
+          "",
+          "Movie metadata: TMDB",
+          "Search: Available",
+          "Movie details: Available",
+          "File delivery: Not configured",
+          "",
+          "Commands: `.help`"
+        ].join("\n")
+      );
+
+      return;
+    }
+
+    default: {
       await safeSendText(
         sock,
         jid,
         "Command එක හඳුනාගන්න බැහැ.\nCommands බලන්න `.help` යවන්න."
       );
+
+      return;
+    }
   }
 }
