@@ -7,6 +7,7 @@ import type {
 import { env } from "../config/env";
 
 const BASE_URL = "https://api.themoviedb.org/3";
+const IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500";
 
 interface TMDBMovie {
   id: number;
@@ -15,11 +16,32 @@ interface TMDBMovie {
   overview?: string;
   vote_average?: number;
   adult?: boolean;
+  poster_path?: string | null;
 }
 
 interface TMDBDetails extends TMDBMovie {
   runtime?: number;
-  genres?: Array<{ name: string }>;
+
+  genres?: Array<{
+    name: string;
+  }>;
+
+  production_countries?: Array<{
+    name: string;
+    iso_3166_1: string;
+  }>;
+
+  external_ids?: {
+    imdb_id?: string | null;
+  };
+
+  credits?: {
+    crew?: Array<{
+      job: string;
+      name: string;
+    }>;
+  };
+
   release_dates?: {
     results?: Array<{
       iso_3166_1: string;
@@ -112,27 +134,54 @@ async function getMovieWithDetails(
   const details = await tmdbRequest<TMDBDetails>(
     `/movie/${movie.id}`,
     {
-      append_to_response: "release_dates"
+      append_to_response:
+        "release_dates,external_ids,credits"
     }
   );
 
-  // Keep TMDB's explicit adult-content flag separate
-  // from ordinary age certifications such as R or 18.
+  // Keep TMDB's explicit adult-content flag protection.
   if (details.adult) return null;
 
-  const ageRating = getCertification(details);
+  const directors =
+    details.credits?.crew
+      ?.filter(person => person.job === "Director")
+      .map(person => person.name) || [];
+
+  const posterUrl = details.poster_path
+    ? `${IMAGE_BASE_URL}${details.poster_path}`
+    : undefined;
 
   return {
     id: String(details.id),
+
     title: details.title,
+
     year: getYear(details.release_date),
+
     overview: details.overview || "",
+
     rating: details.vote_average?.toFixed(1),
-    ageRating,
+
+    ageRating: getCertification(details),
+
     runtime: details.runtime,
+
     genres: details.genres?.map(
       genre => genre.name
     ),
+
+    imdbId:
+      details.external_ids?.imdb_id || undefined,
+
+    posterUrl,
+
+    countries:
+      details.production_countries?.map(
+        country => country.name
+      ) || [],
+
+    directors,
+
     sourceUrl:
       `https://www.themoviedb.org/movie/${details.id}`
   };
@@ -160,6 +209,7 @@ export class TMDBMediaProvider
         );
 
       movies = response.movie_results || [];
+
     } else {
       const response =
         await tmdbRequest<TMDBSearchResponse>(
@@ -174,7 +224,6 @@ export class TMDBMediaProvider
       movies = response.results || [];
     }
 
-    // No age-certification filtering.
     const selected = movies
       .filter(movie => !movie.adult)
       .slice(0, 8);
@@ -183,6 +232,7 @@ export class TMDBMediaProvider
       selected.map(async movie => {
         try {
           return await getMovieWithDetails(movie);
+
         } catch (error) {
           console.error(
             `Could not load movie ${movie.id}:`,
@@ -219,7 +269,7 @@ export class TMDBMediaProvider
   async getAuthorizedLinks(
     _movieId: string
   ) {
-    // No media distribution provider is configured.
+    // No authorized media provider is configured.
     return [];
   }
 }
