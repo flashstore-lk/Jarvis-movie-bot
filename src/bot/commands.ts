@@ -2,7 +2,12 @@
 import type { WASocket } from "@whiskeysockets/baileys";
 
 import { mediaProvider } from "../services/media-provider";
-import { setResults, getResults } from "./state";
+import {
+  setPendingSelection,
+  getPendingSelection,
+  clearPendingSelection
+} from "./state";
+
 import { recordSearch } from "../database/supabase";
 
 import {
@@ -16,7 +21,7 @@ import {
 import type { MovieResult } from "../services/types";
 
 // --------------------------------------------------
-// HELP MENU
+// HELP
 // --------------------------------------------------
 
 const HELP = [
@@ -27,9 +32,11 @@ const HELP = [
   ".mv tt1431045",
   ".mv Deadpool/tt1431045",
   "",
+  "*Movie Selection*",
+  "Search Results message එකට Reply කරලා number එක යවන්න.",
+  "",
   "*Other Commands*",
   ".help - Commands list",
-  ".select 1 - Select movie result",
   ".status - Bot status",
   ".stop - Stop bot replies",
   ".start - Enable bot again",
@@ -38,33 +45,54 @@ const HELP = [
 ].join("\n");
 
 // --------------------------------------------------
-// MOVIE SEARCH RESULT FORMAT
+// SEARCH RESULT FORMAT
 // --------------------------------------------------
 
-function formatMovie(
-  movie: MovieResult,
-  index: number
+function formatSearchResults(
+  movies: MovieResult[]
 ): string {
-  const year = movie.year
-    ? ` (${movie.year})`
-    : "";
+  const lines: string[] = [
+    "╭─「 ꜱᴇᴀʀᴄʜ ʀᴇꜱᴜʟᴛꜱ 」",
+    "│"
+  ];
 
-  const rating = movie.rating
-    ? `⭐ ${movie.rating}/10`
-    : "⭐ Rating unavailable";
+  movies.forEach((movie, index) => {
+    const title = movie.title
+      .replace(/`/g, "'")
+      .replace(/\n/g, " ")
+      .trim();
 
-  const ageRating = movie.ageRating || "Not rated";
+    const year = movie.year || "Unknown";
 
-  const overview = movie.overview
-    ? `\n${movie.overview.slice(0, 220)}`
-    : "";
+    const displayTitle = movie.year
+      ? `${title} (${movie.year})`
+      : title;
 
-  return [
-    `${index + 1}. *${movie.title}${year}*`,
-    rating,
-    `Age rating: ${ageRating}`,
-    overview
-  ].filter(Boolean).join("\n");
+    lines.push(
+      `│ 🎬 ${index + 1} ☞ \`${displayTitle}\``
+    );
+
+    lines.push(
+      `│    🧩 ${year} | 📺 MOVIE`
+    );
+
+    if (index !== movies.length - 1) {
+      lines.push("│");
+    }
+  });
+
+  lines.push("");
+  lines.push("╰──────────────●●►");
+  lines.push("");
+  lines.push(
+    "📌 *Reply with the number to see details.*"
+  );
+  lines.push("");
+  lines.push(
+    "> 𝘱𝘰𝘸𝘦𝘳𝘦𝘥 𝘣𝘺  ᴍᴏᴠɪᴇ ʜᴜʙ </>"
+  );
+
+  return lines.join("\n");
 }
 
 // --------------------------------------------------
@@ -127,14 +155,6 @@ async function sendMovieDetails(
           ? error.message
           : "Unknown error"
       );
-
-      await safeSendText(
-        sock,
-        jid,
-        `${caption}\n\n🖼️ Poster image could not be delivered.`
-      );
-
-      return;
     }
   }
 
@@ -164,7 +184,7 @@ async function searchMovie(
         "Movie නමක් හෝ IMDb ID එකක් ඇතුළත් කරන්න.",
         "",
         "උදාහරණ:",
-        ".mv Deadpool",
+        ".mv Avengers",
         ".mv tt1431045",
         ".mv Deadpool/tt1431045"
       ].join("\n")
@@ -174,20 +194,15 @@ async function searchMovie(
   }
 
   try {
-    // Check combined title / IMDb format.
-    // Example: Deadpool/tt1431045
-
     const slashIndex = cleanQuery.lastIndexOf("/");
 
-    const imdbCandidate =
-      slashIndex >= 0
-        ? cleanQuery.slice(slashIndex + 1).trim()
-        : "";
+    const imdbCandidate = slashIndex >= 0
+      ? cleanQuery.slice(slashIndex + 1).trim()
+      : "";
 
     const combinedMatch =
       /^tt\d{5,12}$/i.test(imdbCandidate);
 
-    // If an IMDb ID is supplied, search by IMDb ID.
     const searchTerm = combinedMatch
       ? imdbCandidate
       : cleanQuery;
@@ -216,9 +231,7 @@ async function searchMovie(
       return;
     }
 
-    // Combined title / IMDb search:
-    // Send details of the first IMDb result directly.
-
+    // Direct IMDb search.
     if (combinedMatch) {
       const details = await mediaProvider.getDetails(
         results[0].id
@@ -234,35 +247,39 @@ async function searchMovie(
         return;
       }
 
-      await sendMovieDetails(
+      await sendMovieDetails(sock, jid, details);
+      return;
+    }
+
+    // Limit list to six results.
+    const movies = results.slice(0, 6);
+
+    // Send the formatted list and capture its WhatsApp message ID.
+    const sent = await safeSendMessage(
+      sock,
+      jid,
+      {
+        text: formatSearchResults(movies)
+      }
+    );
+
+    const searchMessageId = sent?.key?.id;
+
+    if (!searchMessageId) {
+      await safeSendText(
         sock,
         jid,
-        details
+        "Search Results message ID එක ලබාගැනීමට නොහැකි වුණා. නැවත search කරන්න."
       );
 
       return;
     }
 
-    // Normal search:
-    // Save results for the .select command.
-
-    setResults(jid, results);
-
-    const formattedResults = results
-      .map((movie, index) => formatMovie(movie, index))
-      .join("\n\n");
-
-    await safeSendText(
-      sock,
+    // Save results against the exact message ID.
+    setPendingSelection(
       jid,
-      [
-        "🎬 *MOVIE SEARCH RESULTS*",
-        "",
-        formattedResults,
-        "",
-        "Movie එක තෝරන්න:",
-        "`.select 1` වැනි command එකක් යවන්න."
-      ].join("\n")
+      searchMessageId,
+      movies
     );
 
   } catch (error) {
@@ -282,34 +299,37 @@ async function searchMovie(
 }
 
 // --------------------------------------------------
-// SELECT MOVIE
+// SELECT BY REPLY
 // --------------------------------------------------
 
-async function selectMovie(
+async function selectMovieByReply(
   sock: WASocket,
   jid: string,
-  argument: string
+  quotedMessageId: string,
+  answer: string
 ): Promise<void> {
-  if (!/^\d{1,2}$/.test(argument)) {
-    await safeSendText(
-      sock,
-      jid,
-      "නිවැරදි result number එකක් යවන්න.\nඋදාහරණ: `.select 1`"
-    );
-
+  if (!/^\d{1,2}$/.test(answer)) {
     return;
   }
 
-  const index = Number(argument) - 1;
+  const results = getPendingSelection(
+    jid,
+    quotedMessageId
+  );
 
-  const results = getResults(jid);
+  // Ignore numbers that do not reply to our search list.
+  if (!results.length) {
+    return;
+  }
+
+  const index = Number(answer) - 1;
   const selected = results[index];
 
   if (!selected) {
     await safeSendText(
       sock,
       jid,
-      "අංකය වලංගු නැහැ. `.mv Deadpool` මගින් නැවත search කරන්න."
+      "❌ වැරදි අංකයක්. Search Results list එකේ ඇති අංකයක් Reply කරන්න."
     );
 
     return;
@@ -335,6 +355,9 @@ async function selectMovie(
 
       return;
     }
+
+    // Clear the old selection after successful selection.
+    clearPendingSelection(jid);
 
     await sendMovieDetails(
       sock,
@@ -365,7 +388,8 @@ async function selectMovie(
 export async function handleMessage(
   sock: WASocket,
   jid: string,
-  text: string
+  text: string,
+  quotedMessageId?: string
 ): Promise<void> {
   const message = text.trim();
 
@@ -373,10 +397,29 @@ export async function handleMessage(
     return;
   }
 
-  // Only process commands.
+  // Plain number: only process if it replies to our search list.
   if (!message.startsWith(".")) {
     if (await isOptedOut(jid)) {
       return;
+    }
+
+    if (quotedMessageId && /^\d{1,2}$/.test(message)) {
+      if (!isWithinInboundLimit(jid)) {
+        await safeSendText(
+          sock,
+          jid,
+          "ඔබ ඉතා ඉක්මනින් messages එවා ඇත. විනාඩියකින් නැවත උත්සාහ කරන්න."
+        );
+
+        return;
+      }
+
+      await selectMovieByReply(
+        sock,
+        jid,
+        quotedMessageId,
+        message
+      );
     }
 
     return;
@@ -400,8 +443,6 @@ export async function handleMessage(
     ? ""
     : commandLine.slice(firstSpace + 1).trim();
 
-  // Handle STOP / START consent commands.
-
   const consentHandled = await handleConsentCommand(
     sock,
     jid,
@@ -416,8 +457,6 @@ export async function handleMessage(
     return;
   }
 
-  // Inbound rate limit.
-
   if (!isWithinInboundLimit(jid)) {
     await safeSendText(
       sock,
@@ -428,38 +467,16 @@ export async function handleMessage(
     return;
   }
 
-  // Command router.
-
   switch (command) {
     case "help":
     case "menu": {
-      await safeSendText(
-        sock,
-        jid,
-        HELP
-      );
-
+      await safeSendText(sock, jid, HELP);
       return;
     }
 
     case "mv":
     case "movie": {
-      await searchMovie(
-        sock,
-        jid,
-        argument
-      );
-
-      return;
-    }
-
-    case "select": {
-      await selectMovie(
-        sock,
-        jid,
-        argument
-      );
-
+      await searchMovie(sock, jid, argument);
       return;
     }
 
