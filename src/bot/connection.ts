@@ -115,13 +115,7 @@ function getDisconnectDetails(error: unknown) {
 // MESSAGE DIAGNOSTICS
 // --------------------------------------------------
 
-function getMessageType(
-  message: NonNullable<
-    Parameters<
-      NonNullable<WASocket["ev"]["on"]>
-    >[1]
-  > extends never ? never : unknown
-): string {
+function getMessageType(message: unknown): string {
   if (
     !message ||
     typeof message !== "object"
@@ -580,9 +574,9 @@ async function connect(): Promise<void> {
     connectionState = "connecting";
     latestQr = null;
 
-    // ------------------------------------------------
+    // ----------------------------------------------
     // SAVE CREDENTIALS
-    // ------------------------------------------------
+    // ----------------------------------------------
 
     sock.ev.on(
       "creds.update",
@@ -596,9 +590,9 @@ async function connect(): Promise<void> {
       }
     );
 
-    // ------------------------------------------------
+    // ----------------------------------------------
     // CONNECTION EVENTS
-    // ------------------------------------------------
+    // ----------------------------------------------
 
     sock.ev.on(
       "connection.update",
@@ -642,9 +636,9 @@ async function connect(): Promise<void> {
           );
         }
 
-        // --------------------------------------------
+        // ------------------------------------------
         // SUCCESSFUL CONNECTION
-        // --------------------------------------------
+        // ------------------------------------------
 
         if (connection === "open") {
           connectionState = "open";
@@ -683,9 +677,9 @@ async function connect(): Promise<void> {
           }
         }
 
-        // --------------------------------------------
+        // ------------------------------------------
         // CONNECTION CLOSED
-        // --------------------------------------------
+        // ------------------------------------------
 
         if (connection === "close") {
           const details = getDisconnectDetails(
@@ -743,9 +737,9 @@ async function connect(): Promise<void> {
       }
     );
 
-    // ------------------------------------------------
-    // INCOMING MESSAGES + DIAGNOSTIC LOGGING
-    // ------------------------------------------------
+    // ----------------------------------------------
+    // INCOMING MESSAGES
+    // ----------------------------------------------
 
     sock.ev.on(
       "messages.upsert",
@@ -766,6 +760,7 @@ async function connect(): Promise<void> {
           console.log(
             `[Messages] Ignored event type: ${type}`
           );
+
           return;
         }
 
@@ -789,6 +784,7 @@ async function connect(): Promise<void> {
             console.log(
               "[Messages] Ignored: missing message or JID."
             );
+
             continue;
           }
 
@@ -797,6 +793,7 @@ async function connect(): Promise<void> {
             console.log(
               "[Messages] Ignored: message sent by linked account."
             );
+
             continue;
           }
 
@@ -809,6 +806,7 @@ async function connect(): Promise<void> {
             console.log(
               "[Messages] Ignored: non-private chat."
             );
+
             continue;
           }
 
@@ -821,8 +819,13 @@ async function connect(): Promise<void> {
             console.log(
               "[Messages] Ignored: duplicate message."
             );
+
             continue;
           }
+
+          // ----------------------------------------
+          // EXTRACT MESSAGE BODY
+          // ----------------------------------------
 
           const body =
             msg.message.conversation ||
@@ -833,8 +836,17 @@ async function connect(): Promise<void> {
             console.warn(
               "[Messages] Ignored: no supported text body."
             );
+
             continue;
           }
+
+          // ----------------------------------------
+          // EXTRACT QUOTED MESSAGE ID
+          // ----------------------------------------
+
+          const quotedMessageId =
+            msg.message.extendedTextMessage
+              ?.contextInfo?.stanzaId;
 
           const trimmedBody = body.trim();
 
@@ -842,19 +854,25 @@ async function connect(): Promise<void> {
             getCommandLabel(trimmedBody);
 
           console.log(
-            `[Messages] Processing: type=${commandLabel}, length=${trimmedBody.length}`
+            `[Messages] Processing: type=${commandLabel}, length=${trimmedBody.length}, isReply=${Boolean(quotedMessageId)}`
           );
+
+          // ----------------------------------------
+          // HANDLE MESSAGE
+          // ----------------------------------------
 
           try {
             await handleMessage(
               sock,
               jid,
-              body
+              body,
+              quotedMessageId
             );
 
             console.log(
               "[Messages] Processing completed successfully."
             );
+
           } catch (error) {
             console.error(
               "[Bot] Message processing failed:",
