@@ -1,7 +1,7 @@
 
 import makeWASocket, {
   DisconnectReason,
-  useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
   fetchLatestWaWebVersion,
   type WASocket
 } from "@whiskeysockets/baileys";
@@ -18,7 +18,16 @@ import path from "node:path";
 
 import { env } from "../config/env";
 import { handleMessage } from "./commands";
-import { shouldProcessMessage } from "./safety";
+
+import {
+  shouldProcessMessage,
+  safeSendText
+} from "./safety";
+
+import {
+  createAuthState,
+  clearStoredAuthState
+} from "./auth-store";
 
 // --------------------------------------------------
 // TYPES
@@ -54,6 +63,13 @@ let socketGeneration = 0;
 
 let authCleanupPromise: Promise<void> | null = null;
 
+// A new QR or pairing-code attempt activates this flag.
+// Reconnects do not activate it.
+let linkAttemptActive = false;
+
+// Prevent duplicate confirmation messages.
+let confirmationSent = false;
+
 const AUTH_DIR = env.authDir || "/app/auth_info";
 
 const PAIRING_READY_TIMEOUT = 60000;
@@ -70,11 +86,6 @@ function delay(ms: number): Promise<void> {
 function getConnectionState(): ConnectionState {
   return connectionState;
 }
-
-// IMPORTANT:
-// Keep the "open" comparison inside this helper.
-// This prevents TypeScript control-flow narrowing
-// from causing TS2367 in other functions.
 
 function isWhatsAppConnected(): boolean {
   return connectionState === "open";
@@ -93,8 +104,7 @@ function getDisconnectDetails(error: unknown) {
   return {
     name: err?.name || "UnknownError",
     message: err?.message || String(error),
-    statusCode: err?.output?.statusCode ?? null,
-    payload: err?.output?.payload ?? null
+    statusCode: err?.output?.statusCode ?? null
   };
 }
 
@@ -137,7 +147,13 @@ async function clearLoggedOutAuthFiles(): Promise<void> {
   }
 
   authCleanupPromise = (async () => {
-    await mkdir(AUTH_DIR, { recursive: true });
+    // Delete encrypted database session when Supabase
+    // storage is active. This is a no-op in file mode.
+    await clearStoredAuthState();
+
+    await mkdir(AUTH_DIR, {
+      recursive: true
+    });
 
     const entries = await readdir(
       AUTH_DIR,
@@ -161,7 +177,7 @@ async function clearLoggedOutAuthFiles(): Promise<void> {
     }
 
     console.log(
-      "[Connection] Auth files cleared. Safety data preserved."
+      "[Connection] Logged-out auth data cleared."
     );
   })();
 
@@ -185,6 +201,9 @@ async function resetLoggedOutSession(): Promise<void> {
 
   currentSocket = null;
   latestQr = null;
+
+  linkAttemptActive = false;
+  confirmationSent = false;
 
   await clearLoggedOutAuthFiles();
 
@@ -310,9 +329,18 @@ export async function requestWhatsAppPairingCode(
 
   pairingRequestInProgress = true;
 
+  const previousLinkAttempt = linkAttemptActive;
+
+  if (!linkAttemptActive) {
+    confirmationSent = false;
+  }
+
+  linkAttemptActive = true;
+
   try {
     if (getConnectionState() === "logged_out") {
       await resetLoggedOutSession();
+      linkAttemptActive = true;
     }
 
     const state = getConnectionState();
@@ -364,6 +392,10 @@ export async function requestWhatsAppPairingCode(
     return code;
 
   } catch (error) {
+    if (!isWhatsAppConnected()) {
+      linkAttemptActive = previousLinkAttempt;
+    }
+
     console.error(
       "[Connection] Pairing failed:",
       getDisconnectDetails(error)
@@ -438,12 +470,20 @@ async function connect(): Promise<void> {
   const generation = ++socketGeneration;
 
   try {
-    await mkdir(AUTH_DIR, { recursive: true });
+    await mkdir(AUTH_DIR, {
+      recursive: true
+    });
 
+    // Load Supabase encrypted auth state, or use
+    // the local file adapter when configured.
     const {
       state,
       saveCreds
-    } = await useMultiFileAuthState(AUTH_DIR);
+    } = await createAuthState();
+
+    console.log(
+      "[Connection] Auth state loaded."
+    );
 
     console.log(
       "[Connection] Fetching WhatsApp Web version..."
@@ -454,9 +494,11 @@ async function connect(): Promise<void> {
         timeout: 15000
       });
 
+    // Use the bundled version if the latest-version
+    // endpoint is temporarily unavailable.
     if (!versionResult.isLatest) {
-      throw new Error(
-        "Latest WhatsApp Web version is unavailable."
+      console.warn(
+        "[Connection] Latest version unavailable. Using bundled fallback."
       );
     }
 
@@ -473,14 +515,25 @@ async function connect(): Promise<void> {
       return;
     }
 
+    const logger = pino({
+      level: "silent"
+    });
+
+    const auth = {
+      creds: state.creds,
+
+      keys: makeCacheableSignalKeyStore(
+        state.keys,
+        logger
+      )
+    };
+
     const sock = makeWASocket({
       version,
 
-      auth: state,
+      auth,
 
-      logger: pino({
-        level: "silent"
-      }),
+      logger,
 
       printQRInTerminal: false,
 
@@ -510,7 +563,14 @@ async function connect(): Promise<void> {
 
     sock.ev.on(
       "creds.update",
-      saveCreds
+      () => {
+        void saveCreds().catch(error => {
+          console.error(
+            "[Connection] Credential persistence failed:",
+            getDisconnectDetails(error)
+          );
+        });
+      }
     );
 
     // ------------------------------------------------
@@ -541,7 +601,14 @@ async function connect(): Promise<void> {
           );
         }
 
+        // QR generated: this is a new link attempt.
         if (qr) {
+          if (!linkAttemptActive) {
+            confirmationSent = false;
+          }
+
+          linkAttemptActive = true;
+
           latestQr = qr;
 
           if (!isWhatsAppConnected()) {
@@ -552,6 +619,10 @@ async function connect(): Promise<void> {
             "[Connection] QR event received."
           );
         }
+
+        // ------------------------------------------------
+        // SUCCESSFUL CONNECTION
+        // ------------------------------------------------
 
         if (connection === "open") {
           connectionState = "open";
@@ -566,7 +637,36 @@ async function connect(): Promise<void> {
           console.log(
             "[Connection] WhatsApp connected successfully."
           );
+
+          // Send only a short confirmation message
+          // after a new QR or pairing-code link.
+          // Normal reconnects do not trigger this.
+          if (
+            linkAttemptActive &&
+            !confirmationSent &&
+            sock.user?.id
+          ) {
+            const ownJid = sock.user.id;
+
+            confirmationSent = true;
+            linkAttemptActive = false;
+
+            void safeSendText(
+              sock,
+              ownJid,
+              "J.A.R.V.I.S. WhatsApp linked successfully."
+            ).catch(error => {
+              console.error(
+                "[Connection] Confirmation message failed:",
+                getDisconnectDetails(error)
+              );
+            });
+          }
         }
+
+        // ------------------------------------------------
+        // CONNECTION CLOSED
+        // ------------------------------------------------
 
         if (connection === "close") {
           const details = getDisconnectDetails(
@@ -591,6 +691,9 @@ async function connect(): Promise<void> {
           ) {
             connectionState = "logged_out";
             stopped = true;
+
+            linkAttemptActive = false;
+            confirmationSent = false;
 
             clearReconnectTimer();
 
