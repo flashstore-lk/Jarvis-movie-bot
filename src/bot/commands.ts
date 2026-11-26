@@ -1,3 +1,4 @@
+
 import type { WASocket } from "@whiskeysockets/baileys";
 
 import { mediaProvider } from "../services/media-provider";
@@ -6,20 +7,25 @@ import { recordSearch } from "../database/supabase";
 
 import {
   handleConsentCommand,
+  isOptedOut,
   isWithinInboundLimit,
   safeSendText
 } from "./safety";
 
 const HELP = [
-  "🎬 *J.A.R.V.I.S. Movie Bot*",
+  "🎬 *J.A.R.V.I.S. MOVIE BOT*",
   "",
-  "Movie title එකක් හෝ IMDb ID එකක් යවන්න.",
-  "Search results වලින් අංකයක් තෝරන්න.",
+  "*Movie Search*",
+  ".mv Deadpool",
+  ".mv tt1431045",
   "",
-  "Commands:",
-  "*help* - Help",
-  "*STOP* - Bot replies නවත්වන්න",
-  "*START* - Bot නැවත සක්‍රීය කරන්න"
+  "*Other Commands*",
+  ".help - Commands list",
+  ".select 1 - Select movie result",
+  ".stop - Stop bot replies",
+  ".start - Enable bot again",
+  "",
+  "⚠️ Commands සියල්ල . prefix එකෙන් පටන් ගන්න ඕන."
 ].join("\n");
 
 function formatMovie(
@@ -31,7 +37,7 @@ function formatMovie(
     overview?: string;
   },
   index: number
-) {
+): string {
   const year = movie.year
     ? ` (${movie.year})`
     : "";
@@ -54,49 +60,95 @@ function formatMovie(
   ].filter(Boolean).join("\n");
 }
 
-export async function handleMessage(
+async function searchMovie(
   sock: WASocket,
   jid: string,
-  text: string
+  query: string
 ): Promise<void> {
-  const message = text.trim();
-
-  if (!message) return;
-
-  // Consent commands must work even when normal rate limit is reached.
-  const consentHandled = await handleConsentCommand(
-    sock,
-    jid,
-    message
-  );
-
-  if (consentHandled) return;
-
-  // Ignore excessive inbound requests.
-  if (!isWithinInboundLimit(jid)) {
+  if (!query) {
+    await safeSendText(
+      sock,
+      jid,
+      "Movie නමක් හෝ IMDb ID එකක් ඇතුළත් කරන්න.\n\nඋදාහරණ:\n.mv Deadpool\n.mv tt1431045"
+    );
     return;
   }
 
-  if (/^(help|menu)$/i.test(message)) {
-    await safeSendText(sock, jid, HELP);
-    return;
-  }
+  try {
+    await safeSendText(
+      sock,
+      jid,
+      "🔎 Movie එක සොයමින්..."
+    );
 
-  if (/^\d+$/.test(message)) {
-    const index = Number(message) - 1;
-    const results = getResults(jid);
-    const selected = results[index];
+    const results = await mediaProvider.search(query);
 
-    if (!selected) {
+    await recordSearch({
+      jid,
+      query,
+      resultCount: results.length
+    });
+
+    if (!results.length) {
       await safeSendText(
         sock,
         jid,
-        "අංකය වලංගු නැහැ. නැවත movie title එකක් යවන්න."
+        "Movie එකක් හමු වුණේ නැහැ. Movie නම හෝ IMDb ID එක පරීක්ෂා කරන්න."
       );
-
       return;
     }
 
+    setResults(jid, results);
+
+    await safeSendText(
+      sock,
+      jid,
+      "🎬 *MOVIE SEARCH RESULTS*\n\n" +
+      results.map(formatMovie).join("\n\n") +
+      "\n\nMovie එක තෝරන්න:\n`.select 1` වැනි command එකක් යවන්න."
+    );
+  } catch (error) {
+    console.error(
+      "[Bot] Movie search failed:",
+      error instanceof Error ? error.message : "Unknown error"
+    );
+
+    await safeSendText(
+      sock,
+      jid,
+      "Movie search එකේ දෝෂයක් ඇතිවුණා. පසුව නැවත උත්සාහ කරන්න."
+    );
+  }
+}
+
+async function selectMovie(
+  sock: WASocket,
+  jid: string,
+  argument: string
+): Promise<void> {
+  if (!/^\d+$/.test(argument)) {
+    await safeSendText(
+      sock,
+      jid,
+      "නිවැරදි result number එකක් යවන්න.\nඋදාහරණ: `.select 1`"
+    );
+    return;
+  }
+
+  const index = Number(argument) - 1;
+  const results = getResults(jid);
+  const selected = results[index];
+
+  if (!selected) {
+    await safeSendText(
+      sock,
+      jid,
+      "අංකය වලංගු නැහැ. `.mv Deadpool` මගින් නැවත search කරන්න."
+    );
+    return;
+  }
+
+  try {
     const details = await mediaProvider.getDetails(
       selected.id
     );
@@ -107,7 +159,6 @@ export async function handleMessage(
         jid,
         "Movie details ලබාගැනීමට නොහැකි වුණා."
       );
-
       return;
     }
 
@@ -130,53 +181,98 @@ export async function handleMessage(
     ].join("\n");
 
     await safeSendText(sock, jid, response);
-    return;
-  }
+  } catch (error) {
+    console.error(
+      "[Bot] Movie details failed:",
+      error instanceof Error ? error.message : "Unknown error"
+    );
 
-  try {
     await safeSendText(
       sock,
       jid,
-      "🔎 Movie එක සොයමින්..."
+      "Movie details ලබාගැනීමේදී දෝෂයක් ඇතිවුණා."
     );
+  }
+}
 
-    const results = await mediaProvider.search(message);
+export async function handleMessage(
+  sock: WASocket,
+  jid: string,
+  text: string
+): Promise<void> {
+  const message = text.trim();
 
-    await recordSearch({
-      jid,
-      query: message,
-      resultCount: results.length
-    });
+  if (!message) return;
 
-    if (!results.length) {
-      await safeSendText(
-        sock,
-        jid,
-        "Movie එකක් හමු වුණේ නැහැ. නම හෝ IMDb ID එක නැවත පරීක්ෂා කරන්න."
-      );
-
+  // Ignore every message that does not start with ".".
+  if (!message.startsWith(".")) {
+    if (await isOptedOut(jid)) {
       return;
     }
 
-    setResults(jid, results);
+    return;
+  }
 
-    await safeSendText(
-      sock,
-      jid,
-      "🎬 *MOVIE SEARCH RESULTS*\n\n" +
-      results
-        .map(formatMovie)
-        .join("\n\n") +
-      "\n\nMovie එකක් තෝරන්න: අදාළ අංකය යවන්න."
-    );
+  // Remove the prefix and parse command + arguments.
+  const commandLine = message.slice(1).trim();
 
-  } catch (error) {
-    console.error("[Bot] Movie search failed:", error);
+  if (!commandLine) return;
 
-    await safeSendText(
-      sock,
-      jid,
-      "Movie search එකේ දෝෂයක් ඇතිවුණා. පසුව නැවත උත්සාහ කරන්න."
-    );
+  const firstSpace = commandLine.indexOf(" ");
+
+  const command = (
+    firstSpace === -1
+      ? commandLine
+      : commandLine.slice(0, firstSpace)
+  ).toLowerCase();
+
+  const argument = firstSpace === -1
+    ? ""
+    : commandLine.slice(firstSpace + 1).trim();
+
+  // STOP / START must work before the normal rate limit.
+  const consentHandled = await handleConsentCommand(
+    sock,
+    jid,
+    commandLine
+  );
+
+  if (consentHandled) return;
+
+  // Ignore all commands while opted out, except .start.
+  if (await isOptedOut(jid)) {
+    return;
+  }
+
+  if (!isWithinInboundLimit(jid)) {
+    return;
+  }
+
+  switch (command) {
+    case "help":
+    case "menu": {
+      await safeSendText(sock, jid, HELP);
+      return;
+    }
+
+    case "mv":
+    case "movie": {
+      await searchMovie(sock, jid, argument);
+      return;
+    }
+
+    case "select": {
+      await selectMovie(sock, jid, argument);
+      return;
+    }
+
+    default: {
+      await safeSendText(
+        sock,
+        jid,
+        "Command එක හඳුනාගන්න බැහැ.\nCommands බලන්න `.help` යවන්න."
+      );
+      return;
+    }
   }
 }
