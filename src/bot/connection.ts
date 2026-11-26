@@ -1,5 +1,6 @@
 
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   makeCacheableSignalKeyStore,
   fetchLatestWaWebVersion,
@@ -63,11 +64,7 @@ let socketGeneration = 0;
 
 let authCleanupPromise: Promise<void> | null = null;
 
-// A new QR or pairing-code attempt activates this flag.
-// Reconnects do not activate it.
 let linkAttemptActive = false;
-
-// Prevent duplicate confirmation messages.
 let confirmationSent = false;
 
 const AUTH_DIR = env.authDir || "/app/auth_info";
@@ -117,7 +114,6 @@ export function getWhatsAppStatus() {
 
   return {
     connected: isWhatsAppConnected(),
-
     state,
 
     account: isWhatsAppConnected()
@@ -147,8 +143,6 @@ async function clearLoggedOutAuthFiles(): Promise<void> {
   }
 
   authCleanupPromise = (async () => {
-    // Delete encrypted database session when Supabase
-    // storage is active. This is a no-op in file mode.
     await clearStoredAuthState();
 
     await mkdir(AUTH_DIR, {
@@ -163,7 +157,6 @@ async function clearLoggedOutAuthFiles(): Promise<void> {
     for (const entry of entries) {
       if (!entry.isFile()) continue;
 
-      // Preserve safety data.
       if (
         entry.name === "jarvis-safety.json" ||
         entry.name === "jarvis-safety.json.tmp"
@@ -355,7 +348,6 @@ export async function requestWhatsAppPairingCode(
 
     const sock = await waitForPairingSocket();
 
-    // Allow the socket to initialize.
     await delay(PAIRING_SETTLE_DELAY);
 
     if (
@@ -474,8 +466,6 @@ async function connect(): Promise<void> {
       recursive: true
     });
 
-    // Load Supabase encrypted auth state, or use
-    // the local file adapter when configured.
     const {
       state,
       saveCreds
@@ -494,11 +484,9 @@ async function connect(): Promise<void> {
         timeout: 15000
       });
 
-    // Use the bundled version if the latest-version
-    // endpoint is temporarily unavailable.
     if (!versionResult.isLatest) {
       console.warn(
-        "[Connection] Latest version unavailable. Using bundled fallback."
+        "[Connection] Latest version unavailable. Using returned version."
       );
     }
 
@@ -528,6 +516,7 @@ async function connect(): Promise<void> {
       )
     };
 
+    // KIRA-MD style browser identity.
     const sock = makeWASocket({
       version,
 
@@ -537,11 +526,7 @@ async function connect(): Promise<void> {
 
       printQRInTerminal: false,
 
-      browser: [
-        "JARVIS Movie Bot",
-        "Chrome",
-        "1.0.0"
-      ],
+      browser: Browsers.windows("Chrome"),
 
       markOnlineOnConnect: false,
 
@@ -601,7 +586,6 @@ async function connect(): Promise<void> {
           );
         }
 
-        // QR generated: this is a new link attempt.
         if (qr) {
           if (!linkAttemptActive) {
             confirmationSent = false;
@@ -620,9 +604,9 @@ async function connect(): Promise<void> {
           );
         }
 
-        // ------------------------------------------------
+        // --------------------------------------------
         // SUCCESSFUL CONNECTION
-        // ------------------------------------------------
+        // --------------------------------------------
 
         if (connection === "open") {
           connectionState = "open";
@@ -638,9 +622,6 @@ async function connect(): Promise<void> {
             "[Connection] WhatsApp connected successfully."
           );
 
-          // Send only a short confirmation message
-          // after a new QR or pairing-code link.
-          // Normal reconnects do not trigger this.
           if (
             linkAttemptActive &&
             !confirmationSent &&
@@ -664,9 +645,9 @@ async function connect(): Promise<void> {
           }
         }
 
-        // ------------------------------------------------
+        // --------------------------------------------
         // CONNECTION CLOSED
-        // ------------------------------------------------
+        // --------------------------------------------
 
         if (connection === "close") {
           const details = getDisconnectDetails(
@@ -761,7 +742,6 @@ async function connect(): Promise<void> {
             continue;
           }
 
-          // Duplicate message protection.
           if (
             !shouldProcessMessage(
               jid,
