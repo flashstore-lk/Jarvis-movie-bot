@@ -64,26 +64,6 @@ function getCertification(
   return certification || "Not rated";
 }
 
-function isAllowedByDefault(
-  certification: string
-): boolean {
-  const rating = certification
-    .trim()
-    .toUpperCase();
-
-  const restricted = [
-    "R",
-    "NC-17",
-    "X",
-    "18",
-    "18+",
-    "18A",
-    "TV-MA"
-  ];
-
-  return !restricted.includes(rating);
-}
-
 async function tmdbRequest<T>(
   endpoint: string,
   params: Record<string, string> = {}
@@ -136,13 +116,11 @@ async function getMovieWithDetails(
     }
   );
 
+  // Keep TMDB's explicit adult-content flag separate
+  // from ordinary age certifications such as R or 18.
   if (details.adult) return null;
 
   const ageRating = getCertification(details);
-
-  if (!isAllowedByDefault(ageRating)) {
-    return null;
-  }
 
   return {
     id: String(details.id),
@@ -196,6 +174,7 @@ export class TMDBMediaProvider
       movies = response.results || [];
     }
 
+    // No age-certification filtering.
     const selected = movies
       .filter(movie => !movie.adult)
       .slice(0, 8);
