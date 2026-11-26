@@ -96,13 +96,54 @@ function clearReconnectTimer(): void {
 }
 
 function getDisconnectDetails(error: unknown) {
-  const err = error as any;
+  const err = error as {
+    name?: string;
+    message?: string;
+    output?: {
+      statusCode?: number;
+    };
+  } | null;
 
   return {
     name: err?.name || "UnknownError",
     message: err?.message || String(error),
     statusCode: err?.output?.statusCode ?? null
   };
+}
+
+// --------------------------------------------------
+// MESSAGE DIAGNOSTICS
+// --------------------------------------------------
+
+function getMessageType(
+  message: NonNullable<
+    Parameters<
+      NonNullable<WASocket["ev"]["on"]>
+    >[1]
+  > extends never ? never : unknown
+): string {
+  if (
+    !message ||
+    typeof message !== "object"
+  ) {
+    return "none";
+  }
+
+  return Object.keys(message).join(",");
+}
+
+function getJidType(jid: string): string {
+  return jid.split("@").pop() || "unknown";
+}
+
+function getCommandLabel(body: string): string {
+  const trimmed = body.trim();
+
+  if (!trimmed.startsWith(".")) {
+    return "plain-text";
+  }
+
+  return trimmed.split(/\s+/)[0].slice(0, 20);
 }
 
 // --------------------------------------------------
@@ -516,12 +557,9 @@ async function connect(): Promise<void> {
       )
     };
 
-    // KIRA-MD style browser identity.
     const sock = makeWASocket({
       version,
-
       auth,
-
       logger,
 
       printQRInTerminal: false,
@@ -706,14 +744,12 @@ async function connect(): Promise<void> {
     );
 
     // ------------------------------------------------
-    // INCOMING MESSAGES
+    // INCOMING MESSAGES + DIAGNOSTIC LOGGING
     // ------------------------------------------------
 
     sock.ev.on(
       "messages.upsert",
       async ({ messages, type }) => {
-        if (type !== "notify") return;
-
         if (
           currentSocket !== sock ||
           generation !== socketGeneration ||
@@ -722,16 +758,47 @@ async function connect(): Promise<void> {
           return;
         }
 
+        console.log(
+          `[Messages] Upsert received: type=${type}, count=${messages.length}`
+        );
+
+        if (type !== "notify") {
+          console.log(
+            `[Messages] Ignored event type: ${type}`
+          );
+          return;
+        }
+
         for (const msg of messages) {
-          if (
-            !msg.message ||
-            msg.key.fromMe ||
-            !msg.key.remoteJid
-          ) {
+          const jid = msg.key.remoteJid;
+          const fromMe = Boolean(msg.key.fromMe);
+
+          const messageTypes = getMessageType(
+            msg.message
+          );
+
+          const jidType = jid
+            ? getJidType(jid)
+            : "unknown";
+
+          console.log(
+            `[Messages] Item: fromMe=${fromMe}, jidType=${jidType}, messageTypes=${messageTypes}`
+          );
+
+          if (!msg.message || !jid) {
+            console.log(
+              "[Messages] Ignored: missing message or JID."
+            );
             continue;
           }
 
-          const jid = msg.key.remoteJid;
+          // Ignore messages sent by the linked account.
+          if (fromMe) {
+            console.log(
+              "[Messages] Ignored: message sent by linked account."
+            );
+            continue;
+          }
 
           // Private chats only.
           if (
@@ -739,6 +806,9 @@ async function connect(): Promise<void> {
             jid.endsWith("@broadcast") ||
             jid === "status@broadcast"
           ) {
+            console.log(
+              "[Messages] Ignored: non-private chat."
+            );
             continue;
           }
 
@@ -748,6 +818,9 @@ async function connect(): Promise<void> {
               msg.key.id
             )
           ) {
+            console.log(
+              "[Messages] Ignored: duplicate message."
+            );
             continue;
           }
 
@@ -756,13 +829,31 @@ async function connect(): Promise<void> {
             msg.message.extendedTextMessage?.text ||
             "";
 
-          if (!body.trim()) continue;
+          if (!body.trim()) {
+            console.warn(
+              "[Messages] Ignored: no supported text body."
+            );
+            continue;
+          }
+
+          const trimmedBody = body.trim();
+
+          const commandLabel =
+            getCommandLabel(trimmedBody);
+
+          console.log(
+            `[Messages] Processing: type=${commandLabel}, length=${trimmedBody.length}`
+          );
 
           try {
             await handleMessage(
               sock,
               jid,
               body
+            );
+
+            console.log(
+              "[Messages] Processing completed successfully."
             );
           } catch (error) {
             console.error(
