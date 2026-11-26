@@ -36,6 +36,30 @@ type AuthRecord = EncryptedRecord & {
   updated_at: string;
 };
 
+type PendingKeyWrite = {
+  type: keyof SignalDataTypeMap;
+  upserts: AuthRecord[];
+  deletions: string[];
+};
+
+// Serialize all auth writes to avoid stale concurrent updates.
+let authWriteQueue: Promise<void> = Promise.resolve();
+
+function enqueueAuthWrite(
+  operation: () => Promise<void>
+): Promise<void> {
+  const next = authWriteQueue.then(operation);
+
+  authWriteQueue = next.catch(error => {
+    console.error(
+      "[AuthStore] Queued write failed:",
+      error instanceof Error ? error.message : "Unknown error"
+    );
+  });
+
+  return next;
+}
+
 function usesSupabase(): boolean {
   if (env.authStorageDriver === "file") {
     return false;
@@ -45,10 +69,7 @@ function usesSupabase(): boolean {
     return true;
   }
 
-  return Boolean(
-    supabase &&
-    env.sessionSecret
-  );
+  return Boolean(supabase && env.sessionSecret);
 }
 
 function getEncryptionKey(): Buffer {
@@ -149,6 +170,7 @@ function sessionId(): string {
 async function saveCredentialRecord(
   creds: AuthenticationCreds
 ): Promise<void> {
+  // Encrypt immediately to preserve this update's snapshot.
   const encrypted = encryptValue(creds);
 
   const record: AuthRecord = {
@@ -160,18 +182,20 @@ async function saveCredentialRecord(
     updated_at: new Date().toISOString()
   };
 
-  const { error } = await requireSupabase()
-    .from(TABLE)
-    .upsert(record, {
-      onConflict:
-        "session_id,record_type,key_type,key_id"
-    });
+  await enqueueAuthWrite(async () => {
+    const { error } = await requireSupabase()
+      .from(TABLE)
+      .upsert(record, {
+        onConflict:
+          "session_id,record_type,key_type,key_id"
+      });
 
-  if (error) {
-    throw new Error(
-      `Could not save WhatsApp credentials: ${error.message}`
-    );
-  }
+    if (error) {
+      throw new Error(
+        `Could not save WhatsApp credentials: ${error.message}`
+      );
+    }
+  });
 }
 
 export async function createAuthState(): Promise<{
@@ -187,9 +211,7 @@ export async function createAuthState(): Promise<{
   // Load credentials.
   const { data: credentialRecord, error } = await db
     .from(TABLE)
-    .select(
-      "ciphertext,iv,auth_tag"
-    )
+    .select("ciphertext,iv,auth_tag")
     .eq("session_id", sessionId())
     .eq("record_type", "creds")
     .maybeSingle();
@@ -201,12 +223,9 @@ export async function createAuthState(): Promise<{
   }
 
   const creds = credentialRecord
-    ? decryptValue<AuthenticationCreds>(
-        credentialRecord
-      )
+    ? decryptValue<AuthenticationCreds>(credentialRecord)
     : initAuthCreds();
 
-  // Signal keys are loaded only when Baileys requests them.
   const keys: SignalKeyStore = {
     async get<T extends keyof SignalDataTypeMap>(
       type: T,
@@ -220,9 +239,7 @@ export async function createAuthState(): Promise<{
 
       const { data, error } = await db
         .from(TABLE)
-        .select(
-          "key_id,ciphertext,iv,auth_tag"
-        )
+        .select("key_id,ciphertext,iv,auth_tag")
         .eq("session_id", sessionId())
         .eq("record_type", "key")
         .eq("key_type", String(type))
@@ -237,17 +254,16 @@ export async function createAuthState(): Promise<{
       const result: Record<string, unknown> = {};
 
       for (const record of data || []) {
-        let value = decryptValue<unknown>(
-          record
-        );
+        let value = decryptValue<unknown>(record);
 
         if (
           type === "app-state-sync-key" &&
           value
         ) {
           value =
-            proto.Message.AppStateSyncKeyData
-              .fromObject(value as object);
+            proto.Message.AppStateSyncKeyData.fromObject(
+              value as object
+            );
         }
 
         result[record.key_id] = value;
@@ -259,8 +275,9 @@ export async function createAuthState(): Promise<{
     },
 
     async set(data: SignalDataSet): Promise<void> {
-      const tasks: Promise<void>[] = [];
+      const pending: PendingKeyWrite[] = [];
 
+      // Prepare snapshots before entering the write queue.
       for (
         const type of Object.keys(data) as
           (keyof SignalDataTypeMap)[]
@@ -288,61 +305,65 @@ export async function createAuthState(): Promise<{
           });
         }
 
-        if (deletions.length > 0) {
-          tasks.push(
-            (async () => {
-              const { error } = await db
-                .from(TABLE)
-                .delete()
-                .eq("session_id", sessionId())
-                .eq("record_type", "key")
-                .eq("key_type", String(type))
-                .in("key_id", deletions);
-
-              if (error) {
-                throw new Error(
-                  `Could not delete WhatsApp keys: ${error.message}`
-                );
-              }
-            })()
-          );
-        }
-
-        if (upserts.length > 0) {
-          tasks.push(
-            (async () => {
-              const { error } = await db
-                .from(TABLE)
-                .upsert(upserts, {
-                  onConflict:
-                    "session_id,record_type,key_type,key_id"
-                });
-
-              if (error) {
-                throw new Error(
-                  `Could not save WhatsApp keys: ${error.message}`
-                );
-              }
-            })()
-          );
-        }
+        pending.push({
+          type,
+          upserts,
+          deletions
+        });
       }
 
-      await Promise.all(tasks);
+      if (pending.length === 0) return;
+
+      await enqueueAuthWrite(async () => {
+        for (const item of pending) {
+          if (item.deletions.length > 0) {
+            const { error } = await db
+              .from(TABLE)
+              .delete()
+              .eq("session_id", sessionId())
+              .eq("record_type", "key")
+              .eq("key_type", String(item.type))
+              .in("key_id", item.deletions);
+
+            if (error) {
+              throw new Error(
+                `Could not delete WhatsApp keys: ${error.message}`
+              );
+            }
+          }
+
+          if (item.upserts.length > 0) {
+            const { error } = await db
+              .from(TABLE)
+              .upsert(item.upserts, {
+                onConflict:
+                  "session_id,record_type,key_type,key_id"
+              });
+
+            if (error) {
+              throw new Error(
+                `Could not save WhatsApp keys: ${error.message}`
+              );
+            }
+          }
+        }
+      });
     },
 
     async clear(): Promise<void> {
-      const { error } = await db
-        .from(TABLE)
-        .delete()
-        .eq("session_id", sessionId())
-        .eq("record_type", "key");
+      await enqueueAuthWrite(async () => {
+        const { error } = await db
+          .from(TABLE)
+          .delete()
+          .eq("session_id", sessionId())
+          .eq("record_type", "key");
 
-      if (error) {
-        throw new Error(
-          `Could not clear WhatsApp keys: ${error.message}`
-        );
-      }
+        if (error) {
+          throw new Error(
+            `Could not clear WhatsApp keys: ${error.message}`
+          );
+        }
+      });
     }
   };
 
@@ -363,14 +384,16 @@ export async function clearStoredAuthState(): Promise<void> {
     return;
   }
 
-  const { error } = await requireSupabase()
-    .from(TABLE)
-    .delete()
-    .eq("session_id", sessionId());
+  await enqueueAuthWrite(async () => {
+    const { error } = await requireSupabase()
+      .from(TABLE)
+      .delete()
+      .eq("session_id", sessionId());
 
-  if (error) {
-    throw new Error(
-      `Could not clear stored WhatsApp session: ${error.message}`
-    );
-  }
+    if (error) {
+      throw new Error(
+        `Could not clear stored WhatsApp session: ${error.message}`
+      );
+    }
+  });
 }
