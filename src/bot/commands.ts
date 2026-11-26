@@ -12,12 +12,15 @@ import {
   safeSendText
 } from "./safety";
 
+import type { MovieResult } from "../services/types";
+
 const HELP = [
   "🎬 *J.A.R.V.I.S. MOVIE BOT*",
   "",
   "*Movie Search*",
   ".mv Deadpool",
   ".mv tt1431045",
+  ".mv Deadpool/tt1431045",
   "",
   "*Other Commands*",
   ".help - Commands list",
@@ -29,13 +32,7 @@ const HELP = [
 ].join("\n");
 
 function formatMovie(
-  movie: {
-    title: string;
-    year?: number;
-    rating?: string;
-    ageRating?: string;
-    overview?: string;
-  },
+  movie: MovieResult,
   index: number
 ): string {
   const year = movie.year
@@ -60,6 +57,74 @@ function formatMovie(
   ].filter(Boolean).join("\n");
 }
 
+function formatMovieDetails(
+  movie: MovieResult
+): string {
+  const lines = [
+    `🎬 *${movie.title}${movie.year ? ` (${movie.year})` : ""}*`,
+    "",
+    `│ 🎟️ *YEAR:* \`${movie.year || "Unknown"}\``,
+    `│ 🆔 *IMDb ID:* \`${movie.imdbId || "Unavailable"}\``,
+    `│ ⭐ *TMDB RATING:* \`${movie.rating || "N/A"}/10\``,
+    `│ ⏳ *RUNTIME:* \`${movie.runtime ? `${movie.runtime} MIN` : "Unknown"}\``,
+    `│ 🌍 *COUNTRY:* \`${movie.countries?.join(", ") || "Unknown"}\``,
+    `│ 🎬 *DIRECTOR:* \`${movie.directors?.join(", ") || "Unknown"}\``,
+    `│ 🎭 *GENRES:* \`${movie.genres?.join(", ") || "Unknown"}\``,
+    `│ 🔞 *AGE RATING:* \`${movie.ageRating || "Not rated"}\``,
+    "│",
+    "",
+    "*OVERVIEW:*",
+    movie.overview || "No overview available.",
+    "",
+    `🔗 *TMDB:* ${movie.sourceUrl || "Unavailable"}`,
+    "",
+    "© POWERED BY J.A.R.V.I.S."
+  ];
+
+  return lines.join("\n");
+}
+
+async function sendMovieDetails(
+  sock: WASocket,
+  jid: string,
+  movie: MovieResult
+): Promise<void> {
+  const caption = formatMovieDetails(movie);
+
+  try {
+    if (movie.posterUrl) {
+      await sock.sendMessage(jid, {
+        image: {
+          url: movie.posterUrl
+        },
+        caption
+      });
+
+      return;
+    }
+
+    // Fallback if TMDB does not have a poster.
+    await safeSendText(
+      sock,
+      jid,
+      caption + "\n\n🖼️ Poster image unavailable."
+    );
+
+  } catch (error) {
+    console.error(
+      "[Bot] Poster delivery failed:",
+      error instanceof Error ? error.message : "Unknown error"
+    );
+
+    // If image delivery fails, send text details.
+    await safeSendText(
+      sock,
+      jid,
+      caption + "\n\n🖼️ Poster image could not be delivered."
+    );
+  }
+}
+
 async function searchMovie(
   sock: WASocket,
   jid: string,
@@ -69,12 +134,75 @@ async function searchMovie(
     await safeSendText(
       sock,
       jid,
-      "Movie නමක් හෝ IMDb ID එකක් ඇතුළත් කරන්න.\n\nඋදාහරණ:\n.mv Deadpool\n.mv tt1431045"
+      "Movie නමක් හෝ IMDb ID එකක් ඇතුළත් කරන්න.\n\nඋදාහරණ:\n.mv Deadpool\n.mv tt1431045\n.mv Deadpool/tt1431045"
     );
+
     return;
   }
 
   try {
+    // Combined Movie Title + IMDb ID.
+    const combinedMatch = query.match(
+      /^(.+?)\s*\/\s*(tt\d{5,12})$/i
+    );
+
+    if (combinedMatch) {
+      const suppliedTitle = combinedMatch[1].trim();
+      const imdbId = combinedMatch[2].trim();
+
+      await safeSendText(
+        sock,
+        jid,
+        "🔎 IMDb ID එකෙන් Movie Details ලබාගනිමින්..."
+      );
+
+      const results = await mediaProvider.search(imdbId);
+
+      await recordSearch({
+        jid,
+        query,
+        resultCount: results.length
+      });
+
+      if (!results.length) {
+        await safeSendText(
+          sock,
+          jid,
+          `Movie එක හමු වුණේ නැහැ.\nIMDb ID: ${imdbId}`
+        );
+
+        return;
+      }
+
+      const selected = results[0];
+
+      const details = await mediaProvider.getDetails(
+        selected.id
+      );
+
+      if (!details) {
+        await safeSendText(
+          sock,
+          jid,
+          "Movie Details ලබාගැනීමට නොහැකි වුණා."
+        );
+
+        return;
+      }
+
+      console.log(
+        `[Bot] Direct movie lookup: ${suppliedTitle} -> ${details.title}`
+      );
+
+      await sendMovieDetails(
+        sock,
+        jid,
+        details
+      );
+
+      return;
+    }
+
     await safeSendText(
       sock,
       jid,
@@ -95,6 +223,7 @@ async function searchMovie(
         jid,
         "Movie එකක් හමු වුණේ නැහැ. Movie නම හෝ IMDb ID එක පරීක්ෂා කරන්න."
       );
+
       return;
     }
 
@@ -107,6 +236,7 @@ async function searchMovie(
       results.map(formatMovie).join("\n\n") +
       "\n\nMovie එක තෝරන්න:\n`.select 1` වැනි command එකක් යවන්න."
     );
+
   } catch (error) {
     console.error(
       "[Bot] Movie search failed:",
@@ -132,6 +262,7 @@ async function selectMovie(
       jid,
       "නිවැරදි result number එකක් යවන්න.\nඋදාහරණ: `.select 1`"
     );
+
     return;
   }
 
@@ -145,6 +276,7 @@ async function selectMovie(
       jid,
       "අංකය වලංගු නැහැ. `.mv Deadpool` මගින් නැවත search කරන්න."
     );
+
     return;
   }
 
@@ -159,28 +291,16 @@ async function selectMovie(
         jid,
         "Movie details ලබාගැනීමට නොහැකි වුණා."
       );
+
       return;
     }
 
-    const response = [
-      "🎬 *MOVIE DETAILS*",
-      "",
-      `*Title:* ${details.title}`,
-      `*Year:* ${details.year || "Unknown"}`,
-      `*Rating:* ${details.rating || "N/A"}/10`,
-      `*Age rating:* ${details.ageRating || "Not rated"}`,
-      `*Runtime:* ${details.runtime ? `${details.runtime} minutes` : "Unknown"}`,
-      `*Genres:* ${details.genres?.join(", ") || "Unknown"}`,
-      "",
-      "*Overview:*",
-      details.overview || "No overview available.",
-      "",
-      `*TMDB:* ${details.sourceUrl || "Unavailable"}`,
-      "",
-      "Media delivery දැනට configure කර නැහැ."
-    ].join("\n");
+    await sendMovieDetails(
+      sock,
+      jid,
+      details
+    );
 
-    await safeSendText(sock, jid, response);
   } catch (error) {
     console.error(
       "[Bot] Movie details failed:",
@@ -204,7 +324,6 @@ export async function handleMessage(
 
   if (!message) return;
 
-  // Ignore every message that does not start with ".".
   if (!message.startsWith(".")) {
     if (await isOptedOut(jid)) {
       return;
@@ -213,7 +332,6 @@ export async function handleMessage(
     return;
   }
 
-  // Remove the prefix and parse command + arguments.
   const commandLine = message.slice(1).trim();
 
   if (!commandLine) return;
@@ -230,7 +348,6 @@ export async function handleMessage(
     ? ""
     : commandLine.slice(firstSpace + 1).trim();
 
-  // STOP / START must work before the normal rate limit.
   const consentHandled = await handleConsentCommand(
     sock,
     jid,
@@ -239,7 +356,6 @@ export async function handleMessage(
 
   if (consentHandled) return;
 
-  // Ignore all commands while opted out, except .start.
   if (await isOptedOut(jid)) {
     return;
   }
@@ -272,6 +388,7 @@ export async function handleMessage(
         jid,
         "Command එක හඳුනාගන්න බැහැ.\nCommands බලන්න `.help` යවන්න."
       );
+
       return;
     }
   }
