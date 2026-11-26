@@ -9,6 +9,10 @@ export interface MovieResult {
   sourceUrl?: string;
   runtime?: number;
   genres?: string[];
+  imdbId?: string;
+  posterUrl?: string;
+  countries?: string[];
+  directors?: string[];
 }
 
 export interface MediaProvider {
