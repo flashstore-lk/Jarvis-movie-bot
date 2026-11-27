@@ -2,6 +2,7 @@
 import type { WASocket } from "@whiskeysockets/baileys";
 
 import { mediaProvider } from "../services/media-provider";
+
 import {
   setPendingSelection,
   getPendingSelection,
@@ -13,16 +14,11 @@ import { recordSearch } from "../database/supabase";
 import {
   handleConsentCommand,
   isOptedOut,
-  isWithinInboundLimit,
   safeSendMessage,
   safeSendText
 } from "./safety";
 
 import type { MovieResult } from "../services/types";
-
-// --------------------------------------------------
-// HELP
-// --------------------------------------------------
 
 const HELP = [
   "🎬 *J.A.R.V.I.S. MOVIE BOT*",
@@ -34,6 +30,7 @@ const HELP = [
   "",
   "*Movie Selection*",
   "Search Results message එකට Reply කරලා number එක යවන්න.",
+  "ඊළඟ Movies 10 ලබාගැනීමට A යවන්න.",
   "",
   "*Other Commands*",
   ".help - Commands list",
@@ -44,12 +41,24 @@ const HELP = [
   "Movie නමක් හෝ IMDb ID එකක් ඇතුළත් කරන්න."
 ].join("\n");
 
-// --------------------------------------------------
-// SEARCH RESULT FORMAT
-// --------------------------------------------------
+function shorten(
+  value: string,
+  maxLength: number
+): string {
+  const clean = value
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (clean.length <= maxLength) {
+    return clean;
+  }
+
+  return `${clean.slice(0, maxLength - 1).trim()}…`;
+}
 
 function formatSearchResults(
-  movies: MovieResult[]
+  movies: MovieResult[],
+  page: number
 ): string {
   const lines: string[] = [
     "╭─「 ꜱᴇᴀʀᴄʜ ʀᴇꜱᴜʟᴛꜱ 」",
@@ -62,18 +71,31 @@ function formatSearchResults(
       .replace(/\n/g, " ")
       .trim();
 
-    const year = movie.year || "Unknown";
-
     const displayTitle = movie.year
       ? `${title} (${movie.year})`
       : title;
+
+    const rating = movie.rating
+      ? `${movie.rating}/10`
+      : "Not available";
+
+    const ageRating = movie.ageRating || "Not rated";
 
     lines.push(
       `│ 🎬 ${index + 1} ☞ \`${displayTitle}\``
     );
 
     lines.push(
-      `│    🧩 ${year} | 📺 MOVIE`
+      `│    ⭐ ${rating} | 🔞 ${ageRating}`
+    );
+
+    const overview = shorten(
+      movie.overview || "No overview available.",
+      125
+    );
+
+    lines.push(
+      `│    📝 ${overview}`
     );
 
     if (index !== movies.length - 1) {
@@ -87,17 +109,19 @@ function formatSearchResults(
   lines.push(
     "📌 *Reply with the number to see details.*"
   );
+
+  if (movies.length === 10) {
+    lines.push("");
+    lines.push("*A - More....*");
+  }
+
   lines.push("");
   lines.push(
-    "> 𝘱𝘰𝘸𝘦𝘳𝘦𝘥 𝘣𝘺  ᴍᴏᴠɪᴇ ʜᴜʙ </>"
+    `> ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴍᴏᴠɪᴇ ʜᴜʙ </>`
   );
 
   return lines.join("\n");
 }
-
-// --------------------------------------------------
-// MOVIE DETAILS FORMAT
-// --------------------------------------------------
 
 function formatMovieDetails(
   movie: MovieResult
@@ -127,10 +151,6 @@ function formatMovieDetails(
   ].join("\n");
 }
 
-// --------------------------------------------------
-// SEND MOVIE DETAILS
-// --------------------------------------------------
-
 async function sendMovieDetails(
   sock: WASocket,
   jid: string,
@@ -140,12 +160,16 @@ async function sendMovieDetails(
 
   if (movie.posterUrl) {
     try {
-      await safeSendMessage(sock, jid, {
-        image: {
-          url: movie.posterUrl
-        },
-        caption
-      });
+      await safeSendMessage(
+        sock,
+        jid,
+        {
+          image: {
+            url: movie.posterUrl
+          },
+          caption
+        }
+      );
 
       return;
     } catch (error) {
@@ -165,9 +189,57 @@ async function sendMovieDetails(
   );
 }
 
-// --------------------------------------------------
-// SEARCH MOVIE
-// --------------------------------------------------
+async function sendSearchPage(
+  sock: WASocket,
+  jid: string,
+  query: string,
+  page: number
+): Promise<void> {
+  const results = await mediaProvider.search(
+    query,
+    page
+  );
+
+  if (!results.length) {
+    await safeSendText(
+      sock,
+      jid,
+      page === 1
+        ? "Movie එකක් හමු වුණේ නැහැ. Movie නම හෝ IMDb ID එක පරීක්ෂා කරන්න."
+        : "තවත් Search Results නැහැ. මේ search එකේ අවසාන පිටුවට පැමිණ තිබෙනවා."
+    );
+
+    return;
+  }
+
+  const sent = await safeSendMessage(
+    sock,
+    jid,
+    {
+      text: formatSearchResults(results, page)
+    }
+  );
+
+  const messageId = sent?.key?.id;
+
+  if (!messageId) {
+    await safeSendText(
+      sock,
+      jid,
+      "Search Results message ID එක ලබාගැනීමට නොහැකි වුණා. නැවත search කරන්න."
+    );
+
+    return;
+  }
+
+  setPendingSelection(
+    jid,
+    messageId,
+    query,
+    page,
+    results
+  );
+}
 
 async function searchMovie(
   sock: WASocket,
@@ -213,7 +285,10 @@ async function searchMovie(
       "🔎 Movie එක සොයමින්..."
     );
 
-    const results = await mediaProvider.search(searchTerm);
+    const results = await mediaProvider.search(
+      searchTerm,
+      1
+    );
 
     await recordSearch({
       jid,
@@ -231,7 +306,6 @@ async function searchMovie(
       return;
     }
 
-    // Direct IMDb search.
     if (combinedMatch) {
       const details = await mediaProvider.getDetails(
         results[0].id
@@ -251,35 +325,11 @@ async function searchMovie(
       return;
     }
 
-    // Limit list to six results.
-    const movies = results.slice(0, 6);
-
-    // Send the formatted list and capture its WhatsApp message ID.
-    const sent = await safeSendMessage(
+    await sendSearchPage(
       sock,
       jid,
-      {
-        text: formatSearchResults(movies)
-      }
-    );
-
-    const searchMessageId = sent?.key?.id;
-
-    if (!searchMessageId) {
-      await safeSendText(
-        sock,
-        jid,
-        "Search Results message ID එක ලබාගැනීමට නොහැකි වුණා. නැවත search කරන්න."
-      );
-
-      return;
-    }
-
-    // Save results against the exact message ID.
-    setPendingSelection(
-      jid,
-      searchMessageId,
-      movies
+      searchTerm,
+      1
     );
 
   } catch (error) {
@@ -298,32 +348,60 @@ async function searchMovie(
   }
 }
 
-// --------------------------------------------------
-// SELECT BY REPLY
-// --------------------------------------------------
-
 async function selectMovieByReply(
   sock: WASocket,
   jid: string,
   quotedMessageId: string,
   answer: string
 ): Promise<void> {
-  if (!/^\d{1,2}$/.test(answer)) {
-    return;
-  }
-
-  const results = getPendingSelection(
+  const session = getPendingSelection(
     jid,
     quotedMessageId
   );
 
-  // Ignore numbers that do not reply to our search list.
-  if (!results.length) {
+  if (!session) return;
+
+  const normalizedAnswer = answer.trim().toUpperCase();
+
+  // A = next page
+  if (normalizedAnswer === "A") {
+    try {
+      await safeSendText(
+        sock,
+        jid,
+        "⏳ ඊළඟ Movies සොයමින්..."
+      );
+
+      await sendSearchPage(
+        sock,
+        jid,
+        session.query,
+        session.page + 1
+      );
+    } catch (error) {
+      console.error(
+        "[Bot] Next page failed:",
+        error instanceof Error
+          ? error.message
+          : "Unknown error"
+      );
+
+      await safeSendText(
+        sock,
+        jid,
+        "ඊළඟ Search Results ලබාගැනීමේදී දෝෂයක් ඇතිවුණා."
+      );
+    }
+
     return;
   }
 
-  const index = Number(answer) - 1;
-  const selected = results[index];
+  if (!/^\d{1,2}$/.test(normalizedAnswer)) {
+    return;
+  }
+
+  const index = Number(normalizedAnswer) - 1;
+  const selected = session.results[index];
 
   if (!selected) {
     await safeSendText(
@@ -356,7 +434,6 @@ async function selectMovieByReply(
       return;
     }
 
-    // Clear the old selection after successful selection.
     clearPendingSelection(jid);
 
     await sendMovieDetails(
@@ -364,7 +441,6 @@ async function selectMovieByReply(
       jid,
       details
     );
-
   } catch (error) {
     console.error(
       "[Bot] Movie details failed:",
@@ -381,10 +457,6 @@ async function selectMovieByReply(
   }
 }
 
-// --------------------------------------------------
-// MAIN MESSAGE HANDLER
-// --------------------------------------------------
-
 export async function handleMessage(
   sock: WASocket,
   jid: string,
@@ -393,27 +465,19 @@ export async function handleMessage(
 ): Promise<void> {
   const message = text.trim();
 
-  if (!message) {
-    return;
-  }
+  if (!message) return;
 
-  // Plain number: only process if it replies to our search list.
+  // Replies to Search Results messages.
   if (!message.startsWith(".")) {
-    if (await isOptedOut(jid)) {
-      return;
-    }
+    if (await isOptedOut(jid)) return;
 
-    if (quotedMessageId && /^\d{1,2}$/.test(message)) {
-      if (!isWithinInboundLimit(jid)) {
-        await safeSendText(
-          sock,
-          jid,
-          "ඔබ ඉතා ඉක්මනින් messages එවා ඇත. විනාඩියකින් නැවත උත්සාහ කරන්න."
-        );
-
-        return;
-      }
-
+    if (
+      quotedMessageId &&
+      (
+        /^A$/i.test(message) ||
+        /^\d{1,2}$/.test(message)
+      )
+    ) {
       await selectMovieByReply(
         sock,
         jid,
@@ -427,9 +491,7 @@ export async function handleMessage(
 
   const commandLine = message.slice(1).trim();
 
-  if (!commandLine) {
-    return;
-  }
+  if (!commandLine) return;
 
   const firstSpace = commandLine.indexOf(" ");
 
@@ -449,23 +511,9 @@ export async function handleMessage(
     commandLine
   );
 
-  if (consentHandled) {
-    return;
-  }
+  if (consentHandled) return;
 
-  if (await isOptedOut(jid)) {
-    return;
-  }
-
-  if (!isWithinInboundLimit(jid)) {
-    await safeSendText(
-      sock,
-      jid,
-      "ඔබ ඉතා ඉක්මනින් messages එවා ඇත. විනාඩියකින් නැවත උත්සාහ කරන්න."
-    );
-
-    return;
-  }
+  if (await isOptedOut(jid)) return;
 
   switch (command) {
     case "help":
@@ -490,6 +538,7 @@ export async function handleMessage(
           "Movie metadata: TMDB",
           "Search: Available",
           "Movie details: Available",
+          "Search pagination: Available",
           "File delivery: Not configured",
           "",
           "Commands: `.help`"
