@@ -20,6 +20,7 @@ import path from "node:path";
 
 import { env } from "../config/env";
 import { handleMessage } from "./commands";
+import { getBotSetting } from "../database/supabase";
 
 import {
   shouldProcessMessage,
@@ -178,6 +179,45 @@ function getMessageType(message: unknown): string {
 
 function getJidType(jid: string): string {
   return jid.split("@").pop() || "unknown";
+}
+
+
+function normalizeComparableJid(value: string | null | undefined): string {
+  if (!value) return "";
+  const clean = value.trim().toLowerCase().replace(/:\d+(?=@)/, "");
+  if (!clean) return "";
+  if (clean.includes("@")) return clean;
+  if (/^\d{8,16}$/.test(clean)) return `${clean}@s.whatsapp.net`;
+  return clean;
+}
+
+function sameAccountJid(left: string | null | undefined, right: string | null | undefined): boolean {
+  const a = normalizeComparableJid(left);
+  const b = normalizeComparableJid(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const aPhone = a.endsWith("@s.whatsapp.net") ? a.split("@")[0] : "";
+  const bPhone = b.endsWith("@s.whatsapp.net") ? b.split("@")[0] : "";
+  return Boolean(aPhone && bPhone && aPhone === bPhone);
+}
+
+function isOwnAccountChat(sock: WASocket, messageKey: WAMessageKey): boolean {
+  const extendedKey = messageKey as WAMessageKey & {
+    remoteJidAlt?: string;
+    participantAlt?: string;
+  };
+  const user = sock.user as (typeof sock.user & { lid?: string }) | undefined;
+  const ownIds = [user?.id, user?.lid].filter((value): value is string => Boolean(value));
+  const chatIds = [messageKey.remoteJid, extendedKey.remoteJidAlt]
+    .filter((value): value is string => Boolean(value));
+  return ownIds.some((ownId) => chatIds.some((chatId) => sameAccountJid(ownId, chatId)));
+}
+
+function chooseSenderJid(primary?: string | null, alternate?: string | null): string {
+  const candidates = [primary, alternate].filter((value): value is string => Boolean(value));
+  return candidates.find((value) => normalizeComparableJid(value).endsWith("@s.whatsapp.net"))
+    || candidates[0]
+    || "";
 }
 
 function getCommandLabel(body: string): string {
@@ -836,25 +876,70 @@ async function connect(): Promise<void> {
             continue;
           }
 
-          // Ignore messages sent by the linked account.
-          if (fromMe) {
-            console.log(
-              "[Messages] Ignored: message sent by linked account."
-            );
+          const extendedKey = msg.key as WAMessageKey & {
+            remoteJidAlt?: string;
+            participantAlt?: string;
+          };
+          const isGroup = jid.endsWith("@g.us");
+          const isBroadcast = jid.endsWith("@broadcast") || jid === "status@broadcast";
+          const ownChat = isOwnAccountChat(sock, msg.key);
+          const body =
+            msg.message.conversation ||
+            msg.message.extendedTextMessage?.text ||
+            "";
+          const trimmedBody = body.trim();
+          const chatMode = (await getBotSetting("chat_mode") || "public").toLowerCase();
 
+          if (isBroadcast) {
+            console.log("[Messages] Ignored: broadcast/status message.");
             continue;
           }
 
-          // Private chats only.
-          if (
-            jid.endsWith("@g.us") ||
-            jid.endsWith("@broadcast") ||
-            jid === "status@broadcast"
-          ) {
-            console.log(
-              "[Messages] Ignored: non-private chat."
-            );
+          let senderJid = "";
+          if (isGroup) {
+            if (fromMe) {
+              console.log("[Messages] Ignored outgoing group message.");
+              continue;
+            }
+            if (chatMode !== "group") {
+              console.log(`[Messages] Ignored group message in ${chatMode} mode.`);
+              continue;
+            }
+            senderJid = chooseSenderJid(msg.key.participant, extendedKey.participantAlt);
+            if (!senderJid) {
+              console.log("[Messages] Ignored group message without participant identity.");
+              continue;
+            }
+          } else {
+            // Messages sent by the linked account are accepted only in its own Self-Chat.
+            if (fromMe && !ownChat) {
+              console.log("[Messages] Ignored outgoing message outside Self-Chat.");
+              continue;
+            }
 
+            if (chatMode === "private" && !ownChat) {
+              console.log("[Messages] Ignored message: private mode allows Self-Chat only.");
+              continue;
+            }
+
+            // In group mode, allow the Owner to switch modes from the linked account's Self-Chat.
+            const ownerControlInGroupMode =
+              chatMode === "group" &&
+              ownChat &&
+              /^\.settings(?:\\s|$)/i.test(trimmedBody);
+
+            if (chatMode === "group" && !ownerControlInGroupMode) {
+              console.log("[Messages] Ignored private message in group mode.");
+              continue;
+            }
+
+            senderJid = ownChat
+              ? sock.user?.id || jid
+              : chooseSenderJid(msg.key.participant, extendedKey.participantAlt) || jid;
+          }
+
+          if (!trimmedBody) {
+            console.warn("[Messages] Ignored: no supported text body.");
             continue;
           }
 
@@ -872,23 +957,6 @@ async function connect(): Promise<void> {
           }
 
           // ----------------------------------------
-          // EXTRACT MESSAGE BODY
-          // ----------------------------------------
-
-          const body =
-            msg.message.conversation ||
-            msg.message.extendedTextMessage?.text ||
-            "";
-
-          if (!body.trim()) {
-            console.warn(
-              "[Messages] Ignored: no supported text body."
-            );
-
-            continue;
-          }
-
-          // ----------------------------------------
           // EXTRACT QUOTED MESSAGE ID
           // ----------------------------------------
 
@@ -896,8 +964,6 @@ async function connect(): Promise<void> {
           const quotedMessageId =
             msg.message.extendedTextMessage
               ?.contextInfo?.stanzaId ?? undefined;
-
-          const trimmedBody = body.trim();
 
           const commandLabel =
             getCommandLabel(trimmedBody);
@@ -910,12 +976,11 @@ async function connect(): Promise<void> {
           // ADD PROCESSING REACTION
           // ----------------------------------------
 
-          const reactionAdded =
-            await addProcessingReaction(
-              sock,
-              jid,
-              msg.key
-            );
+          const autoReactEnabled =
+            (await getBotSetting("auto_react") || "on").toLowerCase() === "on";
+          const reactionAdded = autoReactEnabled
+            ? await addProcessingReaction(sock, jid, msg.key)
+            : false;
 
           try {
             // Wait approximately one second.
@@ -926,7 +991,8 @@ async function connect(): Promise<void> {
               sock,
               jid,
               body,
-              quotedMessageId
+              quotedMessageId,
+              senderJid
             );
 
             console.log(

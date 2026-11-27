@@ -363,7 +363,7 @@ async function discover(
       setPendingSelection(
         jid,
         id,
-        `movie:${kind}`,
+        `discover:${kind}`,
         1,
         results
       );
@@ -651,14 +651,15 @@ export async function handleMessage(
   sock: WASocket,
   jid: string,
   text: string,
-  quotedMessageId?: string
+  quotedMessageId?: string,
+  senderJid = jid
 ): Promise<void> {
   const message = text.trim();
 
   if (!message) return;
 
   if (!message.startsWith(".")) {
-    if (await isOptedOut(jid)) return;
+    if (await isOptedOut(senderJid)) return;
 
     if (
       quotedMessageId &&
@@ -686,17 +687,17 @@ export async function handleMessage(
 
   const argument = args.join(" ").trim();
 
-  if (await handleConsentCommand(sock, jid, line)) {
+  if (await handleConsentCommand(sock, senderJid, line)) {
     return;
   }
 
-  if (await isOptedOut(jid)) return;
+  if (await isOptedOut(senderJid)) return;
 
   const maintenance = await getBotSetting("maintenance");
 
   if (
     maintenance === "on" &&
-    !["status", "ping", "about", "help", "menu", "jid"].includes(command)
+    !["status", "ping", "about", "help", "menu", "jid", "settings"].includes(command)
   ) {
     await safeSendText(
       sock,
@@ -730,7 +731,7 @@ export async function handleMessage(
           "╭─「 ᴡʜᴀᴛꜱᴀᴘᴘ ɪᴅ 」",
           "│",
           "│ 👤 *Your JID:*",
-          `│ \`${jid}\``,
+          `│ \`${senderJid}\``,
           "│",
           "╰──────────────●●►",
           "",
@@ -823,7 +824,7 @@ export async function handleMessage(
     case "fav": {
       await changeLibrary(
         sock,
-        jid,
+        senderJid,
         "favorite",
         argument || "list"
       );
@@ -838,7 +839,7 @@ export async function handleMessage(
     case "watchlist": {
       await changeLibrary(
         sock,
-        jid,
+        senderJid,
         "watchlist",
         argument || "list"
       );
@@ -854,7 +855,8 @@ export async function handleMessage(
       await handleSettings(
         sock,
         jid,
-        argument
+        argument,
+        senderJid
       );
 
       return;

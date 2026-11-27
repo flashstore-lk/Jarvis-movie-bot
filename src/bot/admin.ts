@@ -1,7 +1,7 @@
 import type { WASocket } from "@whiskeysockets/baileys";
 import { env } from "../config/env";
 import {
-  addAdmin, adminCan, getBotSetting, isOwner, listAdmins,
+  addAdmin, adminCan, getBotSetting, getBotSettings, isOwner, listAdmins,
   removeAdmin, setAdminPermissions, setBotSetting
 } from "../database/supabase";
 import { safeSendText } from "./safety";
@@ -70,10 +70,12 @@ const settings: SettingDef[] = [
 ];
 
 const permissionFor = (item: SettingDef) => `settings:${item.key}`;
-const normalizeJid = (value: string) => value.trim().replace(/[^\d]/g, "").length >= 8
-  ? `${value.replace(/[^\d]/g, "")}@s.whatsapp.net` : null;
-const getStoredValue = async (item: SettingDef) => await getBotSetting(item.key) ?? item.value;
-
+const normalizeJid = (value: string) => {
+  const clean = value.trim().toLowerCase().replace(/:\d+(?=@)/, "");
+  if (/^\d{8,16}$/.test(clean)) return `${clean}@s.whatsapp.net`;
+  if (/^\d{8,16}@s\.whatsapp\.net$/.test(clean)) return clean;
+  return null;
+};
 function renderPanel(values: Record<string, string>) {
   const groups = [...new Set(settings.map((item) => item.category))];
   const lines = ["╭─「  🅂🄴🅃🅃🄸🄽🄶🅂  」", "│"];
@@ -83,7 +85,17 @@ function renderPanel(values: Record<string, string>) {
       const current = values[item.key] ?? item.value;
       lines.push(`│ ${String(item.id).padStart(2, "0")}. ${item.label} [${current || "not set"}]`);
       (item.options || (item.editable ? ["edit"] : [])).forEach((option, index) => {
-        lines.push(`╎${String.fromCharCode(65 + index)} - 𝐨𝐩𝐭𝐢𝐨𝐧 ${option}`);
+        const display = option === "public" ? "𝐩𝐮𝐛𝐥𝐢𝐜"
+          : option === "private" ? "𝐩𝐫𝐢𝐯𝐚𝐭𝐞"
+          : option === "group" ? "𝐠𝐫𝐨𝐮𝐩"
+          : option === "on" ? "𝐨𝐧"
+          : option === "off" ? "𝐨𝐟𝐟"
+          : option === "edit" ? "𝐞𝐝𝐢𝐭"
+          : option === "reset" ? "𝐫𝐞𝐬𝐞𝐭"
+          : option === "english" ? "𝐞𝐧𝐠𝐥𝐢𝐬𝐡"
+          : option === "sinhala" ? "𝐬𝐢𝐧𝐡𝐚𝐥𝐚"
+          : `𝐨𝐩𝐭𝐢𝐨𝐧 ${option}`;
+        lines.push(`╎${String.fromCharCode(65 + index)} - ${display}`);
       });
       lines.push("│");
     }
@@ -93,8 +105,9 @@ function renderPanel(values: Record<string, string>) {
 }
 
 async function sendPanel(sock: WASocket, jid: string) {
+  const stored = await getBotSettings(settings.map((item) => item.key));
   const values: Record<string, string> = {};
-  for (const item of settings) values[item.key] = await getStoredValue(item) ?? item.value;
+  for (const item of settings) values[item.key] = stored[item.key] ?? item.value;
   await safeSendText(sock, jid, renderPanel(values));
 }
 
@@ -102,13 +115,13 @@ function parseDuration(value: string) {
   return /^(0|[1-9]\d{0,3})(s|sec|m|min)?$/i.test(value);
 }
 
-export async function handleSettings(sock: WASocket, jid: string, args: string) {
+export async function handleSettings(sock: WASocket, jid: string, args: string, actorJid = jid) {
   const input = args.trim();
   const [first = "", second = "", ...tail] = input.split(/\s+/);
   const value = tail.join(" ").trim();
 
   if (!input || first.toLowerCase() === "help" || first.toLowerCase() === "panel") {
-    if (!await isOwner(jid) && !await adminCan(jid, "settings:panel")) {
+    if (!await isOwner(actorJid) && !await adminCan(actorJid, "settings:panel")) {
       await safeSendText(sock, jid, "🔒 Settings Panel එක බැලීමට Owner/Admin අවසර අවශ්‍යයි.");
       return true;
     }
@@ -117,7 +130,7 @@ export async function handleSettings(sock: WASocket, jid: string, args: string) 
   }
 
   if (first.toLowerCase() === "admin") {
-    if (!await isOwner(jid)) {
+    if (!await isOwner(actorJid)) {
       await safeSendText(sock, jid, "🔒 Admin කළමනාකරණය Ownerට පමණයි.");
       return true;
     }
@@ -140,7 +153,7 @@ export async function handleSettings(sock: WASocket, jid: string, args: string) 
       return true;
     }
     if (operation === "add") {
-      await addAdmin(target, jid);
+      await addAdmin(target, actorJid);
       await safeSendText(sock, jid, `✅ Admin එකතු කළා: ${target}\nDefault permission: settings:welcome`);
     } else {
       await removeAdmin(target);
@@ -150,7 +163,7 @@ export async function handleSettings(sock: WASocket, jid: string, args: string) 
   }
 
   if (first.toLowerCase() === "maintenance") {
-    if (!await isOwner(jid)) {
+    if (!await isOwner(actorJid)) {
       await safeSendText(sock, jid, "🔒 Maintenance Mode වෙනස් කළ හැක්කේ Ownerට පමණයි.");
       return true;
     }
@@ -159,7 +172,7 @@ export async function handleSettings(sock: WASocket, jid: string, args: string) 
       await safeSendText(sock, jid, "භාවිතය: `.settings maintenance on` / `.settings maintenance off`");
       return true;
     }
-    await setBotSetting("maintenance", mode, jid);
+    await setBotSetting("maintenance", mode, actorJid);
     await safeSendText(sock, jid, `Maintenance Mode: ${mode.toUpperCase()}`);
     return true;
   }
@@ -170,11 +183,11 @@ export async function handleSettings(sock: WASocket, jid: string, args: string) 
     await safeSendText(sock, jid, "Setting අංකය හඳුනාගත නොහැක. `.settings` යවලා panel එක බලන්න.");
     return true;
   }
-  if (item.ownerOnly && !await isOwner(jid)) {
+  if (item.ownerOnly && !await isOwner(actorJid)) {
     await safeSendText(sock, jid, "🔒 මේ Setting එක වෙනස් කළ හැක්කේ Ownerට පමණයි.");
     return true;
   }
-  if (!await isOwner(jid) && !await adminCan(jid, permissionFor(item))) {
+  if (!await isOwner(actorJid) && !await adminCan(actorJid, permissionFor(item))) {
     await safeSendText(sock, jid, "🔒 මේ Setting එක වෙනස් කිරීමට ඔබට අවසර නැහැ.");
     return true;
   }
@@ -204,7 +217,7 @@ export async function handleSettings(sock: WASocket, jid: string, args: string) 
     const target = normalizeJid(value);
     if (!target) { await safeSendText(sock, jid, "වලංගු WhatsApp අංකයක් දෙන්න. උදා: `.settings 34 A 947XXXXXXXX`"); return true; }
     entries = choice === "add" ? [...new Set([...entries, target])] : entries.filter((entry) => entry !== target);
-    await setBotSetting(listKey, JSON.stringify(entries), jid);
+    await setBotSetting(listKey, JSON.stringify(entries), actorJid);
     await safeSendText(sock, jid, `✅ ${target} ${choice === "add" ? "ලැයිස්තුවට එකතු කළා" : "ලැයිස්තුවෙන් ඉවත් කළා"}.`);
     return true;
   }
@@ -237,14 +250,14 @@ export async function handleSettings(sock: WASocket, jid: string, args: string) 
       const status = await getBotSetting("maintenance");
       await safeSendText(sock, jid, `Database setting read: ${status === null ? "not configured / unavailable" : "reachable"}`);
     } else {
-      await safeSendText(sock, jid, `${item.label}: ${await getStoredValue(item)}\nමෙම dashboard metric/action එක සඳහා වෙනම runtime integration එකක් තවම සම්බන්ධ කර නැහැ.`);
+      await safeSendText(sock, jid, `${item.label}: ${(await getBotSetting(item.key) ?? item.value)}\nමෙම dashboard metric/action එක සඳහා වෙනම runtime integration එකක් තවම සම්බන්ධ කර නැහැ.`);
     }
     return true;
   }
 
   if (["edit", "reset"].includes(choice)) {
     if (choice === "reset") {
-      await setBotSetting(item.key, item.value, jid);
+      await setBotSetting(item.key, item.value, actorJid);
       await safeSendText(sock, jid, `✅ ${item.label} default value එකට reset කළා.`);
       return true;
     }
@@ -256,12 +269,12 @@ export async function handleSettings(sock: WASocket, jid: string, args: string) 
       await safeSendText(sock, jid, "කාලය 0s, 10s හෝ 2m වැනි ආකාරයකින් දෙන්න.");
       return true;
     }
-    await setBotSetting(item.key, value.slice(0, 500), jid);
+    await setBotSetting(item.key, value.slice(0, 500), actorJid);
     await safeSendText(sock, jid, `✅ ${item.label} update කළා. (මෙම අගය save වුණා; runtime feature එක වෙනම සම්බන්ධ කළ යුතුයි.)`);
     return true;
   }
 
-  await setBotSetting(item.key, choice, jid);
+  await setBotSetting(item.key, choice, actorJid);
   await safeSendText(sock, jid, `✅ ${item.label}: ${choice}\nSupabase එකේ save කළා. Runtime එකට බලපාන ලෙස සම්බන්ධ කිරීම අවශ්‍ය විය හැකියි.`);
   return true;
 }
