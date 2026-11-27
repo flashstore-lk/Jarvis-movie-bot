@@ -72,6 +72,10 @@ const AUTH_DIR = env.authDir || "/app/auth_info";
 const PAIRING_READY_TIMEOUT = 60000;
 const PAIRING_SETTLE_DELAY = 3000;
 
+// Processing reaction settings
+const PROCESSING_REACTION = "⏳";
+const PROCESSING_DELAY = 1000;
+
 // --------------------------------------------------
 // HELPERS
 // --------------------------------------------------
@@ -109,6 +113,60 @@ function getDisconnectDetails(error: unknown) {
     message: err?.message || String(error),
     statusCode: err?.output?.statusCode ?? null
   };
+}
+
+// --------------------------------------------------
+// MESSAGE REACTION
+// --------------------------------------------------
+
+async function addProcessingReaction(
+  sock: WASocket,
+  jid: string,
+  messageKey: NonNullable<
+    Parameters<WASocket["sendMessage"]>[1]
+  > extends never
+    ? never
+    : import("@whiskeysockets/baileys").WAMessageKey
+): Promise<boolean> {
+  try {
+    await sock.sendMessage(jid, {
+      react: {
+        text: PROCESSING_REACTION,
+        key: messageKey
+      }
+    });
+
+    return true;
+
+  } catch (error) {
+    console.warn(
+      "[Reaction] Could not add processing reaction:",
+      getDisconnectDetails(error)
+    );
+
+    return false;
+  }
+}
+
+async function removeProcessingReaction(
+  sock: WASocket,
+  jid: string,
+  messageKey: import("@whiskeysockets/baileys").WAMessageKey
+): Promise<void> {
+  try {
+    await sock.sendMessage(jid, {
+      react: {
+        text: "",
+        key: messageKey
+      }
+    });
+
+  } catch (error) {
+    console.warn(
+      "[Reaction] Could not remove processing reaction:",
+      getDisconnectDetails(error)
+    );
+  }
 }
 
 // --------------------------------------------------
@@ -858,10 +916,27 @@ async function connect(): Promise<void> {
           );
 
           // ----------------------------------------
-          // HANDLE MESSAGE
+          // ADD PROCESSING REACTION
           // ----------------------------------------
 
+          const reactionAdded =
+            await addProcessingReaction(
+              sock,
+              jid,
+              msg.key
+            );
+
           try {
+            // --------------------------------------
+            // PROCESSING DELAY
+            // --------------------------------------
+
+            await delay(PROCESSING_DELAY);
+
+            // --------------------------------------
+            // HANDLE MESSAGE
+            // --------------------------------------
+
             await handleMessage(
               sock,
               jid,
@@ -877,6 +952,36 @@ async function connect(): Promise<void> {
             console.error(
               "[Bot] Message processing failed:",
               getDisconnectDetails(error)
+            );
+
+            try {
+              await safeSendText(
+                sock,
+                jid,
+                "Bot එකේ message එක process කිරීමේදී දෝෂයක් ඇතිවුණා. නැවත උත්සාහ කරන්න."
+              );
+            } catch (sendError) {
+              console.error(
+                "[Bot] Error notification failed:",
+                getDisconnectDetails(sendError)
+              );
+            }
+
+          } finally {
+            // --------------------------------------
+            // REMOVE PROCESSING REACTION
+            // --------------------------------------
+
+            if (reactionAdded) {
+              await removeProcessingReaction(
+                sock,
+                jid,
+                msg.key
+              );
+            }
+
+            console.log(
+              "[Messages] Processing reaction cleanup completed."
             );
           }
         }
