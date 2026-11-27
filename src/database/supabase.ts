@@ -66,7 +66,11 @@ export async function isOwner(jid: string): Promise<boolean> {
 }
 
 function normalizeJid(jid: string) {
-  return jid.trim().toLowerCase().replace(/:\d+(?=@)/, "");
+  const value = jid.trim().toLowerCase().replace(/:\d+(?=@)/, "");
+  if (!value) return "";
+  if (value.includes("@")) return value;
+  if (/^\d{8,16}$/.test(value)) return `${value}@s.whatsapp.net`;
+  return value;
 }
 
 export async function isAuthorizedAdmin(jid: string): Promise<boolean> {
