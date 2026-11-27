@@ -16,16 +16,14 @@ export interface MovieResult {
 }
 
 export interface MediaProvider {
-  search(query: string): Promise<MovieResult[]>;
+  search(query: string, page?: number): Promise<MovieResult[]>;
 
   getDetails(movieId: string): Promise<MovieResult | null>;
 
   getAuthorizedLinks(
     movieId: string
-  ): Promise<
-    Array<{
-      label: string;
-      url: string;
-    }>
-  >;
+  ): Promise<Array<{
+    label: string;
+    url: string;
+  }>>;
 }
