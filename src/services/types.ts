@@ -1,6 +1,6 @@
-
 export interface MovieResult {
   id: string;
+  mediaType?: "movie" | "tv";
   title: string;
   year?: number;
   overview?: string;
@@ -17,13 +17,10 @@ export interface MovieResult {
 
 export interface MediaProvider {
   search(query: string, page?: number): Promise<MovieResult[]>;
-
+  searchTv(query: string, page?: number): Promise<MovieResult[]>;
+  discover(kind: "popular" | "trending" | "top" | "upcoming", page?: number): Promise<MovieResult[]>;
   getDetails(movieId: string): Promise<MovieResult | null>;
-
-  getAuthorizedLinks(
-    movieId: string
-  ): Promise<Array<{
-    label: string;
-    url: string;
-  }>>;
+  getTvDetails(tvId: string): Promise<MovieResult | null>;
+  getByImdbId(imdbId: string): Promise<MovieResult | null>;
+  getAuthorizedLinks(movieId: string): Promise<Array<{ label: string; url: string }>>;
 }
