@@ -1,32 +1,62 @@
-# J.A.R.V.I.S. Movie Bot — Feature Update
+# J.A.R.V.I.S. Movie Bot — Full Project Update
 
-## Files
-Copy the `src/` directory files into the same paths in your repository. Add the SQL migration file under `supabase/migrations/`.
+## What changed in this update
 
-## Railway Variables
-Add `OWNER_JID` as a private Railway variable. Format: `947XXXXXXXX@s.whatsapp.net` (your own WhatsApp number with country code; do not share it in chat).
-Existing variables remain required: `DASHBOARD_USER`, `DASHBOARD_PASSWORD`, `TMDB_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`.
+- Fixed Self-Chat processing: messages from the linked account are accepted only when the chat is the linked account's own Self-Chat.
+- Added runtime Chat Mode handling through Setting `01`:
+  - `public`: private chats, including Self-Chat; groups are ignored.
+  - `private`: only the linked account's Self-Chat.
+  - `group`: groups only. The Owner can still use `.settings` from Self-Chat to change the mode.
+- Group messages use the participant JID as the actor identity while replies are sent to the group chat.
+- Owner/Admin checks for `.settings` use the sender identity, not the reply destination.
+- Normalized phone-number JIDs so `947XXXXXXXX` and `947XXXXXXXX@s.whatsapp.net` compare consistently.
+- Optimized the 55-setting panel to fetch stored values in one Supabase request instead of 55 sequential requests.
+- Setting `06` / `40` (`auto_react`) now controls the processing reaction.
+- Added `.settings` to the maintenance-mode command allowlist so the Owner can turn maintenance mode off.
+- Fixed discovery pagination state so `A - More...` works for `.popular`, `.trending`, `.top`, and `.upcoming`.
 
-## Supabase
-Run `supabase/migrations/202611270001_bot_features.sql` in Supabase SQL Editor.
+## Chat Mode commands
 
-## Commands
-`.mv`, `.tv`, `.id`, `.popular`, `.trending`, `.top`, `.upcoming`, `.fav`, `.watchlist`, `.help`, `.menu`, `.status`, `.ping`, `.about`, `.settings`.
+Open the panel:
 
-## Admin
-Owner only:
-`.settings admin add 947XXXXXXXX`
-`.settings admin remove 947XXXXXXXX`
-`.settings maintenance on|off`
+```text
+.settings
+```
 
-Owner and authorized Admin:
-`.settings welcome <message>`
-`.settings welcome reset`
+Change the mode using Setting `01`:
 
-New Admins are granted only `settings:welcome` permission by default. The Owner is configured using Railway `OWNER_JID`.
+```text
+.settings 01 A
+```
 
-## Notes
-- Existing `connection.ts`, `state.ts`, `safety.ts`, pairing/session files and package dependencies are unchanged.
-- Favorites and watchlist need the SQL migration.
-- Movie/TV metadata uses TMDB. This update does not add unauthorized movie file downloads.
-- After copying files, run `npm run typecheck` and `npm run build` before deploying.
+- `A` = public
+- `B` = private
+- `C` = group
+
+The Owner is configured using the private Railway variable `OWNER_JID`, preferably in this format:
+
+```text
+947XXXXXXXX@s.whatsapp.net
+```
+
+Do not share the value in chat or commit it to GitHub.
+
+## Deployment
+
+1. Replace the files in your GitHub repository with the files from this ZIP, preserving the folder structure.
+2. Confirm Railway environment variables are still configured:
+   - `DASHBOARD_USER`
+   - `DASHBOARD_PASSWORD`
+   - `TMDB_API_KEY`
+   - `SUPABASE_URL`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+   - `OWNER_JID`
+3. The Supabase migration already included in `supabase/migrations/` should remain in the repository. If it has not been run yet, execute it in Supabase SQL Editor.
+4. Railway should build with `npm run build` and start with `npm start`.
+
+## Important notes
+
+- Existing pairing website, Baileys authentication/session storage, Supabase schema, and Railway configuration are preserved.
+- Favorites and Watchlist require the included Supabase migration.
+- Movie and TV details are metadata from TMDB. This project does not add unauthorized movie-file downloading.
+- Several settings in the 55-item panel are stored in Supabase but still need separate runtime integrations. The panel does not mean every listed automation feature is already active.
