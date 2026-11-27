@@ -4,7 +4,8 @@ import makeWASocket, {
   DisconnectReason,
   makeCacheableSignalKeyStore,
   fetchLatestWaWebVersion,
-  type WASocket
+  type WASocket,
+  type WAMessageKey
 } from "@whiskeysockets/baileys";
 
 import pino from "pino";
@@ -122,11 +123,7 @@ function getDisconnectDetails(error: unknown) {
 async function addProcessingReaction(
   sock: WASocket,
   jid: string,
-  messageKey: NonNullable<
-    Parameters<WASocket["sendMessage"]>[1]
-  > extends never
-    ? never
-    : import("@whiskeysockets/baileys").WAMessageKey
+  messageKey: WAMessageKey
 ): Promise<boolean> {
   try {
     await sock.sendMessage(jid, {
@@ -137,7 +134,6 @@ async function addProcessingReaction(
     });
 
     return true;
-
   } catch (error) {
     console.warn(
       "[Reaction] Could not add processing reaction:",
@@ -151,7 +147,7 @@ async function addProcessingReaction(
 async function removeProcessingReaction(
   sock: WASocket,
   jid: string,
-  messageKey: import("@whiskeysockets/baileys").WAMessageKey
+  messageKey: WAMessageKey
 ): Promise<void> {
   try {
     await sock.sendMessage(jid, {
@@ -160,7 +156,6 @@ async function removeProcessingReaction(
         key: messageKey
       }
     });
-
   } catch (error) {
     console.warn(
       "[Reaction] Could not remove processing reaction:",
@@ -174,10 +169,7 @@ async function removeProcessingReaction(
 // --------------------------------------------------
 
 function getMessageType(message: unknown): string {
-  if (
-    !message ||
-    typeof message !== "object"
-  ) {
+  if (!message || typeof message !== "object") {
     return "none";
   }
 
@@ -475,7 +467,6 @@ export async function requestWhatsAppPairingCode(
     );
 
     return code;
-
   } catch (error) {
     if (!isWhatsAppConnected()) {
       linkAttemptActive = previousLinkAttempt;
@@ -487,7 +478,6 @@ export async function requestWhatsAppPairingCode(
     );
 
     throw error;
-
   } finally {
     pairingRequestInProgress = false;
   }
@@ -902,9 +892,10 @@ async function connect(): Promise<void> {
           // EXTRACT QUOTED MESSAGE ID
           // ----------------------------------------
 
+          // Fix: Convert null to undefined.
           const quotedMessageId =
             msg.message.extendedTextMessage
-              ?.contextInfo?.stanzaId;
+              ?.contextInfo?.stanzaId ?? undefined;
 
           const trimmedBody = body.trim();
 
@@ -927,16 +918,10 @@ async function connect(): Promise<void> {
             );
 
           try {
-            // --------------------------------------
-            // PROCESSING DELAY
-            // --------------------------------------
-
+            // Wait approximately one second.
             await delay(PROCESSING_DELAY);
 
-            // --------------------------------------
-            // HANDLE MESSAGE
-            // --------------------------------------
-
+            // Process the incoming message.
             await handleMessage(
               sock,
               jid,
@@ -947,7 +932,6 @@ async function connect(): Promise<void> {
             console.log(
               "[Messages] Processing completed successfully."
             );
-
           } catch (error) {
             console.error(
               "[Bot] Message processing failed:",
@@ -966,12 +950,8 @@ async function connect(): Promise<void> {
                 getDisconnectDetails(sendError)
               );
             }
-
           } finally {
-            // --------------------------------------
-            // REMOVE PROCESSING REACTION
-            // --------------------------------------
-
+            // Remove reaction after processing finishes.
             if (reactionAdded) {
               await removeProcessingReaction(
                 sock,
@@ -1005,7 +985,6 @@ async function connect(): Promise<void> {
     ) {
       scheduleReconnect();
     }
-
   } finally {
     connecting = false;
   }
