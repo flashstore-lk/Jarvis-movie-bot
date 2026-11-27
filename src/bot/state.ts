@@ -1,8 +1,10 @@
 
 import type { MovieResult } from "../services/types";
 
-interface PendingSelection {
+export interface PendingSelection {
   messageId: string;
+  query: string;
+  page: number;
   results: MovieResult[];
   updatedAt: number;
 }
@@ -14,10 +16,14 @@ const SESSION_TTL = 15 * 60 * 1000;
 export function setPendingSelection(
   jid: string,
   messageId: string,
+  query: string,
+  page: number,
   results: MovieResult[]
 ): void {
   sessions.set(jid, {
     messageId,
+    query,
+    page,
     results,
     updatedAt: Date.now()
   });
@@ -26,21 +32,21 @@ export function setPendingSelection(
 export function getPendingSelection(
   jid: string,
   quotedMessageId: string
-): MovieResult[] {
+): PendingSelection | null {
   const session = sessions.get(jid);
 
-  if (!session) return [];
+  if (!session) return null;
 
   if (Date.now() - session.updatedAt > SESSION_TTL) {
     sessions.delete(jid);
-    return [];
+    return null;
   }
 
   if (session.messageId !== quotedMessageId) {
-    return [];
+    return null;
   }
 
-  return session.results;
+  return session;
 }
 
 export function clearPendingSelection(jid: string): void {
