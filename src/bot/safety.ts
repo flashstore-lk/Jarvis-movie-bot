@@ -18,18 +18,17 @@ import type {
 import { env } from "../config/env";
 
 const AUTH_DIR = env.authDir || "/app/auth_info";
+
 const SAFETY_FILE = path.join(
   AUTH_DIR,
   "jarvis-safety.json"
 );
 
-const MAX_MESSAGES_PER_MINUTE = 10;
 const MAX_SEEN_MESSAGE_IDS = 10000;
 const MAX_PENDING_OUTGOING = 100;
-const OUTGOING_INTERVAL_MS = 1200;
+const OUTGOING_INTERVAL_MS = 100;
 
 const optedOutJids = new Set<string>();
-const rateBuckets = new Map<string, number[]>();
 const seenMessageIds = new Set<string>();
 
 let loaded = false;
@@ -61,7 +60,9 @@ async function ensureLoaded(): Promise<void> {
   }
 
   loading = (async () => {
-    await mkdir(AUTH_DIR, { recursive: true });
+    await mkdir(AUTH_DIR, {
+      recursive: true
+    });
 
     try {
       const raw = await readFile(
@@ -82,7 +83,6 @@ async function ensureLoaded(): Promise<void> {
           optedOutJids.add(jid);
         }
       }
-
     } catch (error) {
       const code = (
         error as NodeJS.ErrnoException
@@ -231,9 +231,7 @@ export function shouldProcessMessage(
 
   seenMessageIds.add(key);
 
-  if (
-    seenMessageIds.size > MAX_SEEN_MESSAGE_IDS
-  ) {
+  if (seenMessageIds.size > MAX_SEEN_MESSAGE_IDS) {
     const oldest = seenMessageIds.values().next().value;
 
     if (oldest) {
@@ -244,47 +242,14 @@ export function shouldProcessMessage(
   return true;
 }
 
+// Kept for compatibility with any older imports.
+// There is no per-minute inbound limit anymore.
 export function isWithinInboundLimit(
-  jid: string
+  _jid: string
 ): boolean {
-  const now = Date.now();
-  const windowStart = now - 60_000;
-
-  const recent = (
-    rateBuckets.get(jid) || []
-  ).filter(timestamp => timestamp > windowStart);
-
-  if (
-    recent.length >= MAX_MESSAGES_PER_MINUTE
-  ) {
-    rateBuckets.set(jid, recent);
-
-    console.warn(
-      `[Safety] Rate limit reached: ${jidTag(jid)}`
-    );
-
-    return false;
-  }
-
-  recent.push(now);
-  rateBuckets.set(jid, recent);
-
-  if (rateBuckets.size > 5000) {
-    const oldest = rateBuckets.keys().next().value;
-
-    if (oldest) {
-      rateBuckets.delete(oldest);
-    }
-  }
-
   return true;
 }
 
-/**
- * All outgoing messages use one queue.
- * Returns the sent WhatsApp message so callers
- * can store its message ID for reply selection.
- */
 export function safeSendMessage(
   sock: WASocket,
   jid: string,
@@ -292,9 +257,7 @@ export function safeSendMessage(
 ): Promise<
   Awaited<ReturnType<WASocket["sendMessage"]>>
 > {
-  if (
-    pendingOutgoing >= MAX_PENDING_OUTGOING
-  ) {
+  if (pendingOutgoing >= MAX_PENDING_OUTGOING) {
     return Promise.reject(
       new Error("Outgoing message queue is full.")
     );
@@ -302,29 +265,31 @@ export function safeSendMessage(
 
   pendingOutgoing += 1;
 
-  const task = outgoingQueue.then(async () => {
-    const elapsed = Date.now() - lastOutgoingAt;
+  const task = outgoingQueue
+    .then(async () => {
+      const elapsed = Date.now() - lastOutgoingAt;
 
-    const waitTime = Math.max(
-      0,
-      OUTGOING_INTERVAL_MS - elapsed
-    );
+      const waitTime = Math.max(
+        0,
+        OUTGOING_INTERVAL_MS - elapsed
+      );
 
-    if (waitTime > 0) {
-      await delay(waitTime);
-    }
+      if (waitTime > 0) {
+        await delay(waitTime);
+      }
 
-    const sent = await sock.sendMessage(
-      jid,
-      content
-    );
+      const sent = await sock.sendMessage(
+        jid,
+        content
+      );
 
-    lastOutgoingAt = Date.now();
+      lastOutgoingAt = Date.now();
 
-    return sent;
-  }).finally(() => {
-    pendingOutgoing -= 1;
-  });
+      return sent;
+    })
+    .finally(() => {
+      pendingOutgoing -= 1;
+    });
 
   outgoingQueue = task.then(
     () => undefined,
