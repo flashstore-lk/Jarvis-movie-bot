@@ -3,6 +3,7 @@ import express from "express";
 import { env } from "./config/env";
 import dashboard from "./dashboard";
 import pairing from "./pairing";
+import downloadDelivery from "./download/delivery";
 
 import { startWhatsApp } from "./bot/connection";
 
@@ -25,6 +26,7 @@ app.get("/health", (_req, res) => {
 
 app.use("/admin", dashboard);
 app.use("/pairing", pairing);
+app.use("/internal/download-delivery", downloadDelivery);
 
 app.listen(env.port, () => {
   console.log(
