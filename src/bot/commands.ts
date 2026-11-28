@@ -14,7 +14,9 @@ import {
   saveLibraryItem,
   listLibrary,
   removeLibraryItem,
-  getBotSetting
+  getBotSetting,
+  isOwner,
+  adminCan
 } from "../database/supabase";
 
 import {
@@ -26,6 +28,7 @@ import {
 
 import { handleSettings } from "./admin";
 import type { MovieResult } from "../services/types";
+import { rememberDownloadOptions, getDownloadOptions, queueDownload } from "../download/manager";
 
 // --------------------------------------------------
 // COMMAND LIST
@@ -35,6 +38,7 @@ const COMMANDS = [
   ".mv <movie> — Movie Search",
   ".tv <series> — TV Series Search",
   ".id <IMDb ID> — IMDb Search",
+  "↳ Reply with a quality number — Download selected quality",
   ".jid — Show Your WhatsApp JID",
   ".popular — Popular Movies",
   ".trending — Trending Movies",
@@ -61,6 +65,7 @@ const HELP = [
   ".mv Deadpool",
   ".tv Breaking Bad",
   ".id tt1431045",
+  "↳ Reply to the movie details with a quality number (final number = ALL QUALITY)",
   "",
   "*WHATSAPP*",
   ".jid",
@@ -156,26 +161,33 @@ function formatSearchResults(movies: MovieResult[]) {
 // MOVIE DETAILS FORMAT
 // --------------------------------------------------
 
-function formatDetails(movie: MovieResult) {
-  return [
-    `🎬 *${movie.title}${movie.year ? ` (${movie.year})` : ""}*`,
+function formatDetails(movie: MovieResult, downloadLinks: Array<{ label: string; url: string }> = []) {
+  const lines = [
+    `*${movie.title}${movie.year ? ` (${movie.year})` : ""}*`,
     "",
-    `│ 🎟️ *YEAR:* \`${movie.year || "Unknown"}\``,
-    `│ 🆔 *IMDb ID:* \`${movie.imdbId || "Unavailable"}\``,
-    `│ ⭐ *TMDB RATING:* \`${movie.rating ? `${movie.rating}/10` : "Unavailable"}\``,
-    `│ ⏳ *RUNTIME:* \`${movie.runtime ? `${movie.runtime} MIN` : "Unknown"}\``,
-    `│ 🌍 *COUNTRY:* \`${movie.countries?.join(", ") || "Unknown"}\``,
-    `│ 🎬 *DIRECTOR:* \`${movie.directors?.join(", ") || "Unknown"}\``,
-    `│ 🎭 *GENRES:* \`${movie.genres?.join(", ") || "Unknown"}\``,
-    `│ 🔞 *AGE RATING:* \`${movie.ageRating || "Not rated"}\``,
-    "",
-    "*OVERVIEW:*",
-    movie.overview || "No overview available.",
-    "",
-    `🔗 *TMDB:* ${movie.sourceUrl || "Unavailable"}`,
-    "",
-    "© POWERED BY J.A.R.V.I.S."
-  ].join("\n");
+    `│ 🎟️ *ʏᴇᴀʀ:* \`${movie.year || "Unknown"}\``,
+    `│ 🆔 *ɪᴍᴅʙ:* \`${movie.imdbId || "Unavailable"}\``,
+    `│ ⭐ *ʀᴀᴛɪɴɢ:* \`${movie.rating || "Unavailable"}\``,
+    `│ ⏳ *ʀuntime:* \`${movie.runtime ? `${movie.runtime} MIN` : "Unknown"}\``,
+    `│ 🌍 *ᴄᴏᴜɴᴛʀʏ:* \`${movie.countries?.join(", ") || "Unknown"}\``,
+    `│ 🎬 *ᴅɪʀᴇᴄᴛᴏʀ:* \`${movie.directors?.join(", ") || "Unknown"}\``,
+    "│ │",
+    `│ \`${[movie.ageRating, ...(movie.genres || [])].filter(Boolean).join(", ") || "Genres unavailable"}\``
+  ];
+
+  if (downloadLinks.length) {
+    lines.push("│", "⚖️ *𝖲𝖤𝖫𝖤𝖢𝖳 𝖰𝖴𝖠𝖫𝖨𝖳𝖸 🔻*", "");
+    downloadLinks.forEach((link, index) => {
+      lines.push(`${index + 1}➢ \`${link.label}\``);
+    });
+    lines.push(`${downloadLinks.length + 1}➢ \`ALL QUALITY\``, "│", "╰─────────────➢");
+    lines.push("", "> ʀᴇᴘʟʏ ᴛᴏ ᴛʜɪꜱ ᴍᴇꜱꜱᴀɢᴇ ᴡɪᴛʜ ᴛʜᴇ ǫᴜᴀʟɪᴛʏ ɴᴜᴍʙᴇʀ.");
+  } else if (movie.sourceUrl?.startsWith("https://cinesubz.net/movies/")) {
+    lines.push("", "📥 Download options are currently unavailable.");
+  }
+
+  lines.push("", "© ᴘᴏᴡᴇʀᴇᴅ ʙʏ ᴍᴏᴠɪᴇ ʜᴜʙ </>");
+  return lines.join("\n");
 }
 
 // --------------------------------------------------
@@ -187,25 +199,33 @@ async function sendDetails(
   jid: string,
   movie: MovieResult
 ) {
-  const caption = formatDetails(movie);
-
-  if (movie.posterUrl) {
+  let downloadLinks: Array<{ label: string; url: string }> = [];
+  if (movie.mediaType !== "tv" && movie.sourceUrl?.startsWith("https://cinesubz.net/movies/")) {
     try {
-      await safeSendMessage(sock, jid, {
-        image: { url: movie.posterUrl },
-        caption
-      });
-
-      return;
+      downloadLinks = await mediaProvider.getAuthorizedLinks(movie.sourceUrl);
     } catch (error) {
-      console.warn(
-        "[Bot] Poster delivery failed:",
-        error
-      );
+      console.warn("[CineSubz] Download link resolution failed:", error);
     }
   }
 
-  await safeSendText(sock, jid, caption);
+  const caption = formatDetails(movie, downloadLinks);
+  let sent: Awaited<ReturnType<typeof safeSendMessage>> | undefined;
+  if (movie.posterUrl) {
+    try {
+      sent = await safeSendMessage(sock, jid, {
+        image: { url: movie.posterUrl },
+        caption
+      });
+    } catch (error) {
+      console.warn("[Bot] Poster delivery failed:", error);
+    }
+  }
+
+  if (!sent) sent = await safeSendMessage(sock, jid, { text: caption });
+  const detailsMessageId = sent?.key?.id;
+  if (detailsMessageId && downloadLinks.length) {
+    rememberDownloadOptions(jid, detailsMessageId, movie.title, downloadLinks);
+  }
 }
 
 // --------------------------------------------------
@@ -661,18 +681,26 @@ export async function handleMessage(
   if (!message.startsWith(".")) {
     if (await isOptedOut(senderJid)) return;
 
-    if (
-      quotedMessageId &&
-      (/^A$/i.test(message) || /^\d{1,2}$/.test(message))
-    ) {
-      await selectReply(
-        sock,
-        jid,
-        quotedMessageId,
-        message
-      );
+    if (quotedMessageId && /^\d{1,2}$/.test(message) && getDownloadOptions(jid, quotedMessageId)) {
+      // A numeric reply to the exact movie-details message selects its quality.
+      if (jid.endsWith("@g.us") && !(await isOwner(senderJid)) && !(await adminCan(senderJid, "download:request"))) {
+        await safeSendText(sock, jid, "🔒 Group එකකින් download request කිරීමට Owner/Admin අවසර අවශ්‍යයි.");
+        return;
+      }
+      try {
+        const job = await queueDownload(jid, senderJid, message, quotedMessageId);
+        await safeSendText(sock, jid,
+          `⏳ *Download queued*\n🎬 ${job.title}\nFiles: ${job.fileCount}\nJob: ${job.jobId.slice(0, 8)}\n\nGitHub Worker එක සකස් කර WhatsApp වෙත එවයි.`);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "Download request failed.";
+        await safeSendText(sock, jid, `❌ Download request එක ආරම්භ කළ නොහැක.\n${detail}`);
+      }
+      return;
     }
 
+    if (quotedMessageId && (/^A$/i.test(message) || /^\d{1,2}$/.test(message))) {
+      await selectReply(sock, jid, quotedMessageId, message);
+    }
     return;
   }
 
@@ -755,6 +783,29 @@ export async function handleMessage(
         "movie"
       );
 
+      return;
+    }
+
+    // ----------------------------------------------
+    // AUTHORIZED DOWNLOAD DELIVERY
+    // ----------------------------------------------
+
+    case "download": {
+      if (jid.endsWith("@g.us") && !(await isOwner(senderJid)) && !(await adminCan(senderJid, "download:request"))) {
+        await safeSendText(sock, jid, "🔒 Group එකකින් download request කිරීමට Owner/Admin අවසර අවශ්‍යයි.");
+        return;
+      }
+      if (!argument) {
+        await safeSendText(sock, jid, "Movie Details message එකට quality number එකෙන් Reply කරන්න. උදා: 1 හෝ ALL QUALITY සඳහා අවසාන අංකය.");
+        return;
+      }
+      try {
+        const job = await queueDownload(jid, senderJid, argument, quotedMessageId);
+        await safeSendText(sock, jid, `⏳ *Download queued*\n🎬 ${job.title}\nFiles: ${job.fileCount}\nJob: ${job.jobId.slice(0, 8)}\n\nGitHub Worker එක file එක සකස් කර WhatsApp වෙත එවයි.`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Download request failed.";
+        await safeSendText(sock, jid, `❌ Download request එක ආරම්භ කළ නොහැක.\n${message}`);
+      }
       return;
     }
 
@@ -874,11 +925,11 @@ export async function handleMessage(
           "🟢 *J.A.R.V.I.S. STATUS*",
           "",
           "WhatsApp: Connected",
-          "Movie metadata: TMDB",
-          "Movie Search: Available",
-          "TV Search: Available",
-          "Favorites/Watchlist: Supabase",
-          "File delivery: Not configured"
+          "Movie Search: CineSubz",
+          "Movie Info: CineSubz + TMDB fallback",
+          "TV Search: TMDB",
+          "Download: GitHub Actions worker → Railway → WhatsApp",
+          "Favorites/Watchlist: Supabase"
         ].join("\n")
       );
 
@@ -912,10 +963,11 @@ export async function handleMessage(
         [
           "🤖 *J.A.R.V.I.S. MOVIE BOT*",
           "",
-          "Movie & TV metadata assistant powered by TMDB.",
+          "Movie Search & Info: CineSubz API",
+          "TV & discovery metadata: TMDB",
           "WhatsApp: Baileys",
           "Database: Supabase",
-          "Media downloads: Not enabled (authorized provider required).",
+          "Download worker: GitHub Actions + Railway WhatsApp delivery.",
           "",
           "Use `.menu` to view commands."
         ].join("\n")

@@ -24,6 +24,7 @@ import { getBotSetting } from "../database/supabase";
 
 import {
   shouldProcessMessage,
+  safeSendMessage,
   safeSendText
 } from "./safety";
 
@@ -1093,4 +1094,35 @@ async function connect(): Promise<void> {
   } finally {
     connecting = false;
   }
+}
+
+
+/** Send one validated worker-delivered file through the active Baileys session. */
+export async function sendDownloadedDocument(
+  jid: string,
+  file: Buffer,
+  fileName: string,
+  mimetype: string,
+  caption: string
+): Promise<void> {
+  if (!currentSocket || connectionState !== "open") {
+    throw new Error("WhatsApp is not connected; the file cannot be delivered right now.");
+  }
+  if (!jid.endsWith("@s.whatsapp.net") && !jid.endsWith("@g.us")) {
+    throw new Error("Unsupported WhatsApp destination.");
+  }
+  await safeSendMessage(currentSocket, jid, {
+    document: file,
+    mimetype,
+    fileName,
+    caption
+  });
+}
+
+
+export async function sendDownloadStatusText(jid: string, text: string): Promise<void> {
+  if (!currentSocket || connectionState !== "open") {
+    throw new Error("WhatsApp is not connected; status message could not be sent.");
+  }
+  await safeSendText(currentSocket, jid, text);
 }
