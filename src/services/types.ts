@@ -6,6 +6,8 @@ export interface MovieResult {
   overview?: string;
   rating?: string;
   ageRating?: string;
+  sourceBadge?: string;
+  sourceProvider?: "cinesubz" | "tmdb";
   sourceUrl?: string;
   runtime?: number;
   genres?: string[];
@@ -13,6 +15,8 @@ export interface MovieResult {
   posterUrl?: string;
   countries?: string[];
   directors?: string[];
+  cast?: string[];
+  subtitleBy?: string;
 }
 
 export interface MediaProvider {
