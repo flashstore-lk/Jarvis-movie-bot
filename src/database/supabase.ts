@@ -172,3 +172,45 @@ export async function getBotSettings(keys: string[]): Promise<Record<string, str
   }
   return result;
 }
+
+export type DownloadJobStatus = "queued" | "running" | "completed" | "failed";
+
+export async function createDownloadJob(input: {
+  jobId: string;
+  jid: string;
+  requestedBy: string;
+  title: string;
+  totalFiles: number;
+}) {
+  const db = requireDb();
+  const { error } = await db.from("download_jobs").insert({
+    job_id: input.jobId,
+    wa_jid: input.jid,
+    requested_by: input.requestedBy,
+    title: input.title.slice(0, 250),
+    total_files: input.totalFiles,
+    completed_files: 0,
+    status: "queued"
+  });
+  if (error) throw new Error(`Could not create download job: ${error.message}`);
+}
+
+export async function updateDownloadJob(
+  jobId: string,
+  patch: {
+    status?: DownloadJobStatus;
+    completedFiles?: number;
+    errorMessage?: string | null;
+  }
+) {
+  const db = requireDb();
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (patch.status !== undefined) update.status = patch.status;
+  if (patch.completedFiles !== undefined) {
+    update.completed_files = Math.max(0, Math.floor(patch.completedFiles));
+  }
+  if (patch.errorMessage !== undefined) update.error_message = patch.errorMessage?.slice(0, 900) ?? null;
+
+  const { error } = await db.from("download_jobs").update(update).eq("job_id", jobId);
+  if (error) throw new Error(`Could not update download job: ${error.message}`);
+}
