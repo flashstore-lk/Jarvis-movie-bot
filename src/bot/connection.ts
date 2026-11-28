@@ -973,20 +973,49 @@ async function connect(): Promise<void> {
           );
 
           // ----------------------------------------
-          // ADD PROCESSING REACTION
+          // AUTO READ / TYPING / REACTION
           // ----------------------------------------
 
+          const autoReadEnabled =
+            (await getBotSetting("auto_read") || "off").toLowerCase() === "on";
+          const autoTypingEnabled =
+            (await getBotSetting("auto_typing") || "on").toLowerCase() === "on";
           const autoReactEnabled =
             (await getBotSetting("auto_react") || "on").toLowerCase() === "on";
+
+          // Mark incoming messages as read only when explicitly enabled.
+          if (autoReadEnabled && !fromMe) {
+            try {
+              await sock.readMessages([msg.key]);
+            } catch (error) {
+              console.warn(
+                "[Auto Read] Could not mark message as read:",
+                getDisconnectDetails(error)
+              );
+            }
+          }
+
+          // Show the composing indicator while the bot handles the message.
+          let typingStarted = false;
+          if (autoTypingEnabled) {
+            try {
+              await sock.sendPresenceUpdate("composing", jid);
+              typingStarted = true;
+            } catch (error) {
+              console.warn(
+                "[Auto Typing] Could not set composing presence:",
+                getDisconnectDetails(error)
+              );
+            }
+          }
+
           const reactionAdded = autoReactEnabled
             ? await addProcessingReaction(sock, jid, msg.key)
             : false;
 
           try {
-            // Wait approximately one second.
             await delay(PROCESSING_DELAY);
 
-            // Process the incoming message.
             await handleMessage(
               sock,
               jid,
@@ -1017,7 +1046,17 @@ async function connect(): Promise<void> {
               );
             }
           } finally {
-            // Remove reaction after processing finishes.
+            if (typingStarted) {
+              try {
+                await sock.sendPresenceUpdate("paused", jid);
+              } catch (error) {
+                console.warn(
+                  "[Auto Typing] Could not clear composing presence:",
+                  getDisconnectDetails(error)
+                );
+              }
+            }
+
             if (reactionAdded) {
               await removeProcessingReaction(
                 sock,
@@ -1027,7 +1066,7 @@ async function connect(): Promise<void> {
             }
 
             console.log(
-              "[Messages] Processing reaction cleanup completed."
+              "[Messages] Automation cleanup completed."
             );
           }
         }

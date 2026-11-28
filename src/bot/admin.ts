@@ -51,7 +51,7 @@ const settings: SettingDef[] = [
   {id:37,category:"Security & Permissions",label:"𝙲𝚘𝚖𝚖𝚊𝚗𝚍 𝙲𝚘𝚘𝚕𝚍𝚘𝚠𝚗",key:"command_cooldown",value:"0s",editable:true},
   {id:38,category:"Security & Permissions",label:"𝚁𝚊𝚝𝚎 𝙻𝚒𝚖𝚒𝚝",key:"rate_limit",value:"on",options:["on","off"]},
   {id:39,category:"Security & Permissions",label:"𝙾𝚠𝚗𝚎𝚛 𝙿𝚛𝚘𝚝𝚎𝚌𝚝𝚒𝚘𝚗",key:"owner_protection",value:"on",options:["on","off"],ownerOnly:true},
-  {id:40,category:"Automation",label:"𝙰𝚞𝚝𝚘 𝚁𝚎𝚊𝚌𝚝",key:"automation_auto_react",value:"on",options:["on","off"]},
+  {id:40,category:"Automation",label:"𝙰𝚞𝚝𝚘 𝚁𝚎𝚊𝚌𝚝",key:"auto_react",value:"on",options:["on","off"]},
   {id:41,category:"Automation",label:"𝙰𝚞𝚝𝚘 𝚁𝚎𝚜𝚝𝚊𝚛𝚝",key:"auto_restart",value:"on",options:["on","off"],ownerOnly:true},
   {id:42,category:"Automation",label:"𝙰𝚞𝚝𝚘 𝙱𝚊𝚌𝚔𝚞𝚙",key:"auto_backup",value:"off",options:["on","off"],ownerOnly:true},
   {id:43,category:"Automation",label:"𝙳𝚊𝚒𝚕𝚢 𝚁𝚎𝚙𝚘𝚛𝚝",key:"daily_report",value:"off",options:["on","off"]},
