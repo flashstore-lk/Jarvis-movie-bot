@@ -28,6 +28,6 @@ COPY --from=build /app/dist ./dist
 
 RUN mkdir -p /app/auth_info
 
-EXPOSE 3000
+EXPOSE 8080
 
 CMD ["npm", "start"]

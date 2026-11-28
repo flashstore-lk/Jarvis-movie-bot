@@ -86,14 +86,18 @@ Open:
 The dashboard uses HTTP Basic Authentication.
 Use HTTPS and a strong password.
 
-## Current limitations
+## CineSubz integration
 
-- Movie metadata search provider is not configured.
-- Media delivery is disabled by default.
-- Dashboard is currently read-only.
-- Conversation state is stored in memory.
-- Build and live WhatsApp tests must be run
-  before production use.
+Set `MOCHI_API_KEY` as a private Railway environment variable.
+Movie search and movie details use CineSubz only. TV search and movie
+discovery commands continue to use TMDB. Authorized download requests
+are dispatched to the GitHub Actions worker, validated and processed in
+temporary runner storage, then delivered by the existing Railway
+Baileys session. See `DOWNLOAD-SYSTEM-SETUP.md` for the required Railway
+variables, GitHub Actions secrets, and Supabase migration.
+
+`TMDB_API_KEY` remains required for TV search and discovery commands.
+The adult-content filter remains enabled.
 
 ## Important
 
