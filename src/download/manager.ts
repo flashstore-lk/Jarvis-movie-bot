@@ -52,7 +52,9 @@ export function getDownloadOptions(jid: string, messageId?: string): PendingDown
 export async function queueDownload(jid: string, requestedBy: string, selection: string, quotedMessageId?: string) {
   if (!env.githubActionsToken) throw new Error("GITHUB_ACTIONS_TOKEN is not configured in Railway.");
   if (!env.downloadDeliveryToken) throw new Error("DOWNLOAD_DELIVERY_TOKEN is not configured in Railway.");
-  if (!env.mochiApiKey) throw new Error("MOCHI_API_KEY is not configured in Railway.");
+  if (!env.githubRepository) throw new Error("GITHUB_REPOSITORY is not configured in Railway.");
+  if (!env.githubBranch) throw new Error("GITHUB_BRANCH is not configured in Railway.");
+  if (!env.downloadWorkflow) throw new Error("DOWNLOAD_WORKFLOW is not configured in Railway.");
 
   const item = getDownloadOptions(jid, quotedMessageId);
   if (!item) throw new Error("මේ Movie Details message එකටම Reply කරන්න. විනාඩි 20කට පසු options කල් ඉකුත් වෙනවා.");
@@ -63,7 +65,6 @@ export async function queueDownload(jid: string, requestedBy: string, selection:
     options = item.options;
   } else {
     const index = Number(selected);
-    // The final displayed number is the ALL QUALITY option.
     if (!Number.isInteger(index) || index < 1 || index > item.options.length + 1) {
       throw new Error(`Reply with a number from 1-${item.options.length + 1}.`);
     }

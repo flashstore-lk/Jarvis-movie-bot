@@ -47,7 +47,7 @@ router.post("/file", verifyDeliveryToken, express.raw({ type: "application/octet
   }
   try {
     await sendDownloadedDocument(jid, req.body, fileName, mimetype, caption);
-    await updateDownloadJob(jobId, { status: "running", completedFiles: partNumber }).catch(error => {
+    await updateDownloadJob(jobId, { status: "running", completedFiles: partNumber }).catch((error: unknown) => {
       console.error("[Download Delivery] Progress log failed:", error instanceof Error ? error.message : error);
     });
     return res.json({ success: true, jobId, partNumber });
