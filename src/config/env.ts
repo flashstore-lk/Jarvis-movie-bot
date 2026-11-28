@@ -25,5 +25,12 @@ export const env = {
   authStorageDriver: storageDriver as "auto" | "supabase" | "file",
   authDir: process.env.AUTH_DIR || "/app/auth_info",
   tmdbApiKey: process.env.TMDB_API_KEY || "",
+  mochiApiKey: process.env.MOCHI_API_KEY?.trim() || "",
+  cinesubzApiBaseUrl: (process.env.CINESUBZ_API_BASE_URL || "https://mochi-apis.koyeb.app").replace(/\/+$/, ""),
+  githubActionsToken: process.env.GITHUB_ACTIONS_TOKEN?.trim() || "",
+  downloadDeliveryToken: process.env.DOWNLOAD_DELIVERY_TOKEN?.trim() || "",
+  githubRepository: process.env.GITHUB_REPOSITORY?.trim() || "flashstore-lk/Jarvis-movie-bot",
+  githubBranch: process.env.GITHUB_BRANCH?.trim() || "main",
+  downloadWorkflow: process.env.DOWNLOAD_WORKFLOW?.trim() || "download-worker.yml",
   ownerJid: process.env.OWNER_JID?.trim() || ""
 };
